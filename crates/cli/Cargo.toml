@@ -1,0 +1,27 @@
+[package]
+name = "moon-cli"
+description = "moon: cliente de chat con modelos de lenguaje para terminal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "moon"
+path = "src/main.rs"
+
+[dependencies]
+moon-core            = { workspace = true }
+moon-provider-ollama = { workspace = true }
+moon-provider-openai = { workspace = true }
+moon-tui             = { workspace = true }
+anyhow               = { workspace = true }
+chrono               = { workspace = true }
+clap                 = { workspace = true }
+futures-util         = { workspace = true }
+tokio                = { workspace = true }
+tokio-util           = { workspace = true }
+tracing              = { workspace = true }
+tracing-appender     = { workspace = true }
+tracing-subscriber   = { workspace = true }

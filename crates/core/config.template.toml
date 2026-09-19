@@ -1,0 +1,37 @@
+# moon configuration. Everything is optional: without this file, moon talks to
+# Ollama at http://localhost:11434 and uses the first model it finds.
+
+[general]
+# Model at startup, provider first: "ollama/qwen2.5-coder:14b".
+# default_model = "ollama/qwen2.5-coder:14b"
+# system_prompt = "Answer briefly."
+mouse            = true       # wheel scrolls and drag selects; false leaves selection to the terminal
+save_sessions    = true
+context_file     = "MOON.md"  # project context file, loaded from the start directory into the system prompt
+max_attachment_bytes = 200000 # bigger @files are truncated
+system_stats     = true       # cpu and ram of the machine at the bottom right, sampled every 5 s (every second while the model works)
+
+[params]                      # defaults for every model; /params changes them for one session
+# Ollama loads the model with this window, not with the one the model
+# declares: without it, a long conversation is cut at Ollama's default.
+# num_ctx     = 16384
+# temperature = 0.7
+
+[providers.ollama]
+type     = "ollama"
+base_url = "http://localhost:11434"   # or the OLLAMA_HOST variable
+# think    = false                      # ask for reasoning from models that support it
+# keep_alive = "5m"
+
+# [providers.lmstudio]
+# type     = "openai"
+# base_url = "http://localhost:1234/v1"
+
+# [providers.openrouter]
+# type        = "openai"
+# base_url    = "https://openrouter.ai/api/v1"
+# api_key_env = "OPENROUTER_API_KEY"   # never the key itself
+
+# [theme.overrides]           # any of the ten Moon tokens, as hex
+# moon      = "#8fb8ff"
+# ink-muted = "#a9a7b8"

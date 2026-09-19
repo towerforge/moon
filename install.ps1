@@ -8,6 +8,9 @@
 #   $env:MOON_VERSION     = "0.2.0"           install a specific version
 #   $env:MOON_INSTALL_DIR = "C:\tools\moon"   install to a custom directory
 #                                             (default: %LOCALAPPDATA%\Programs\moon)
+#   $env:MOON_FORCE       = "1"               install even if moon is already
+#                                             there and can update itself
+#   $env:NO_COLOR         = "1"               no colour, whatever the console is
 #
 # Everything lives inside Install-Moon so that `irm | iex` leaves no variables
 # or preferences behind in the calling session.
@@ -21,24 +24,86 @@ function Install-Moon {
     $Api      = "https://api.github.com/repos/$Repo"
     $Releases = "https://github.com/$Repo/releases/download"
 
-    function Step($n, $msg) { Write-Host "`n[$n/4] $msg" -ForegroundColor Cyan }
-    function Info($msg)     { Write-Host "    $msg" -ForegroundColor DarkGray }
-    function Ok($msg)       { Write-Host "    OK  $msg" -ForegroundColor Green }
-    function Warn($msg)     { Write-Host "    !   $msg" -ForegroundColor Yellow }
-    function Kv($k, $v)     { Write-Host ("    {0,-14} {1}" -f $k, $v) }
+    # -- the Moon palette ----------------------------------------------------
+    # The same tokens as the TUI (crates/tui/src/theme.rs). Windows Terminal and
+    # PowerShell 7 take the 24-bit escapes and the box drawing that goes with
+    # them; an older console gets the nearest of its sixteen colours and ASCII,
+    # which is also what survives a 5.1 that read this file as ANSI.
+
+    $esc   = [char]27
+    $fancy = [bool](($env:WT_SESSION -or $PSVersionTable.PSVersion.Major -ge 7) -and -not $env:NO_COLOR)
+    $reset = if ($fancy) { "$($esc)[0m" } else { '' }
+    $tok = @{
+        moon  = @{ ansi = "$($esc)[38;2;143;184;255m"; console = 'Cyan' }
+        ink   = @{ ansi = "$($esc)[38;2;243;236;227m"; console = 'White' }
+        muted = @{ ansi = "$($esc)[38;2;169;167;184m"; console = 'Gray' }
+        line  = @{ ansi = "$($esc)[38;2;74;74;96m";    console = 'DarkGray' }
+        ok    = @{ ansi = "$($esc)[38;2;143;217;160m"; console = 'Green' }
+        alert = @{ ansi = "$($esc)[38;2;255;143;143m"; console = 'Red' }
+    }
+    $dash  = if ($fancy) { [char]0x2504 } else { '-' }
+    $dot   = if ($fancy) { [char]0x00B7 } else { '-' }
+    $tick  = if ($fancy) { [char]0x2713 } else { '+' }
+    $cross = if ($fancy) { [char]0x2717 } else { 'X' }
+
+    function Paint($text, $token, [switch]$NoNewline) {
+        if ($fancy) {
+            Write-Host "$($tok[$token].ansi)$text$reset" -NoNewline:$NoNewline
+        } else {
+            Write-Host $text -ForegroundColor $tok[$token].console -NoNewline:$NoNewline
+        }
+    }
+
+    # -- the pieces every block is drawn with --------------------------------
+
+    $ruleW = 66
+    $cmdW  = 24
+
+    function Rule($num, $title) {
+        $label = if ($num) { "$num $dot $title" } else { $title }
+        $fill  = [Math]::Max(0, $ruleW - $label.Length - 3)
+        Write-Host ''
+        Paint "  $dash " 'line' -NoNewline
+        Paint $label 'moon' -NoNewline
+        Paint (' ' + ([string]$dash * $fill)) 'line'
+    }
+
+    function Kv($k, $v) {
+        Paint ('     ' + $k.PadRight(13)) 'muted' -NoNewline
+        Paint $v 'ink'
+    }
+    function Note($msg) { Paint "     $msg" 'muted' }
+    function Cmd($c, $what) {
+        Paint ('     ' + $c.PadRight($cmdW)) 'moon' -NoNewline
+        Paint $what 'muted'
+    }
+    function Ok($msg)   { Paint "     $tick " 'ok' -NoNewline; Paint $msg 'ink' }
+    function Warn($msg) { Paint "     ! " 'alert' -NoNewline; Paint $msg 'muted' }
     function Die($msg) {
-        Write-Host "`n  X  $msg`n" -ForegroundColor Red
+        Write-Host ''
+        Paint "  $cross $msg" 'alert'
+        Write-Host ''
         throw "moon installer aborted"
     }
 
+    # -- the mark, the same four rows the TUI opens with ---------------------
+
     Write-Host ''
-    Write-Host '  moon' -ForegroundColor Blue -NoNewline
-    Write-Host '  chat with local language models, from your terminal' -ForegroundColor DarkGray
-    Write-Host ''
+    if ($fancy) {
+        # half blocks: each character is two pixels of the crescent, stacked
+        Paint '   ▄█     ' 'moon' -NoNewline; Paint '   moon' 'moon'
+        Paint '  ███     ' 'moon' -NoNewline; Paint '   chat with local language models,' 'muted'
+        Paint '  ████▄▄▄█' 'moon' -NoNewline; Paint '   from your terminal' 'muted'
+        Paint '   ▀████▀ ' 'moon' -NoNewline; Paint "   installer $dot github.com/$Repo" 'line'
+    } else {
+        Paint '  moon' 'moon' -NoNewline
+        Paint '  chat with local language models, from your terminal' 'muted'
+        Paint "  installer - github.com/$Repo" 'line'
+    }
 
     # -- 1. platform ---------------------------------------------------------
 
-    Step 1 'Detecting platform'
+    Rule 1 'platform'
 
     if ($PSVersionTable.PSVersion.Major -ge 6 -and -not $IsWindows) {
         Die 'This installer is for Windows. On Linux and macOS run install.sh instead.'
@@ -50,21 +115,68 @@ function Install-Moon {
     if (-not $archRaw) { $archRaw = $env:PROCESSOR_ARCHITECTURE }
     switch ($archRaw) {
         'AMD64' { $arch = 'x86_64' }
-        'ARM64' { $arch = 'x86_64'; Warn 'No native ARM64 build yet: installing the x86_64 binary, which Windows runs under emulation' }
+        'ARM64' { $arch = 'x86_64' }
         default { Die "Unsupported architecture: $archRaw" }
     }
 
-    Kv 'OS:'           'windows'
-    Kv 'Architecture:' $arch
-    Ok 'Platform detected'
+    Kv 'os'   'windows'
+    Kv 'arch' $arch
+    if ($archRaw -eq 'ARM64') {
+        Warn 'no native ARM64 build yet: the x86_64 binary runs under emulation'
+    }
 
-    # -- 2. version ----------------------------------------------------------
+    # -- 2. release ----------------------------------------------------------
 
-    Step 2 'Resolving version'
+    Rule 2 'release'
+
+    $installDir = if ($env:MOON_INSTALL_DIR) { $env:MOON_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\moon' }
+    $exe        = Join-Path $installDir "$Binary.exe"
+
+    # Detect an existing installation, here or anywhere on the PATH
+    $current   = $null
+    $existing  = $null
+    $onPathExe = (Get-Command "$Binary.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    foreach ($candidate in @($exe, $onPathExe)) {
+        if ($candidate -and (Test-Path $candidate)) {
+            $existing = $candidate
+            try { $current = ((& $candidate --version 2>$null) -split '\s+')[-1] } catch { $current = $null }
+            break
+        }
+    }
+
+    # moon updates itself, so this script is for the first install. Whether the
+    # moon that is there can do it is asked of the binary and not of its version
+    # number: one from before `moon update` existed is upgraded here as always.
+    $selfUpdates = $false
+    if ($current) {
+        try {
+            & $existing update --help *> $null
+            $selfUpdates = ($LASTEXITCODE -eq 0)
+        } catch { $selfUpdates = $false }
+    }
+
+    if ($current -and $selfUpdates -and -not $env:MOON_FORCE) {
+        Kv 'version' "v$current"
+        Kv 'path'    $existing
+        Ok 'moon is already installed'
+        Write-Host ''
+        Paint '     It updates itself.' 'ink' -NoNewline
+        Paint ' From here on:' 'muted'
+        Write-Host ''
+        Cmd 'moon update'            'the latest release'
+        Cmd 'moon update --check'    'is there a new one?'
+        Cmd 'moon update --to 0.2.0' 'that version, downgrades included'
+        Cmd 'moon update --force'    'reinstall the one you have'
+        Write-Host ''
+        Note 'to install with this script anyway:'
+        Note '$env:MOON_FORCE = "1"; irm https://raw.githubusercontent.com/towerforge/moon/main/install.ps1 | iex'
+        Write-Host ''
+        return
+    }
 
     $version = $env:MOON_VERSION
     if (-not $version) {
-        Info 'Querying GitHub releases API...'
+        Note 'asking github for the latest release...'
         try {
             $latest = Invoke-RestMethod -Uri "$Api/releases/latest" -Headers @{ 'User-Agent' = 'moon-installer' } -UseBasicParsing
         } catch {
@@ -77,71 +189,62 @@ function Install-Moon {
     $package      = "$Binary-windows-$arch.zip"
     $url          = "$Releases/v$version/$package"
     $checksumsUrl = "$Releases/v$version/checksums.txt"
-    $installDir   = if ($env:MOON_INSTALL_DIR) { $env:MOON_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\moon' }
-    $exe          = Join-Path $installDir "$Binary.exe"
-
-    # Detect an existing installation
-    $current = $null
-    if (Test-Path $exe) {
-        try { $current = ((& $exe --version 2>$null) -split '\s+')[-1] } catch { $current = $null }
-    }
 
     if (-not $current) {
         $mode = 'install'
-        Kv 'Version:' "v$version"
+        Kv 'version' "v$version"
     } elseif ($current -eq $version) {
         $mode = 'reinstall'
-        Kv 'Version:' "v$version (already installed)"
+        Kv 'version' "v$version  (already installed)"
     } else {
         $mode = 'upgrade'
-        Kv 'Version:' "v$current  ->  v$version"
+        Kv 'version' "v$current  ->  v$version"
     }
-    Kv 'Package:'    $package
-    Kv 'Install to:' $exe
-    Ok 'Version resolved'
+    Kv 'package'    $package
+    Kv 'install to' $exe
 
-    # -- 3. download & verify ------------------------------------------------
+    # -- 3. download ---------------------------------------------------------
 
-    Step 3 'Downloading'
+    Rule 3 'download'
 
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ('moon-install-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tmp | Out-Null
 
     try {
         $zip = Join-Path $tmp $package
-        Info "URL: $url"
+        Note $url
         try {
             Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
         } catch {
             Die "Download failed. Check that release v$version has the asset ${package}:`n  https://github.com/$Repo/releases/tag/v$version"
         }
-        Ok "Downloaded $package"
+        $size = '{0:N1} MB' -f ((Get-Item $zip).Length / 1MB)
+        Ok "downloaded $package  ($size)"
 
         $sums = Join-Path $tmp 'checksums.txt'
         $haveSums = $true
         try { Invoke-WebRequest -Uri $checksumsUrl -OutFile $sums -UseBasicParsing } catch { $haveSums = $false }
 
         if (-not $haveSums) {
-            Warn "checksums.txt not available for v$version"
+            Warn "checksums.txt not published for v${version}: not verified"
         } else {
             $line = Get-Content $sums | Where-Object { $_ -match ('\s' + [regex]::Escape($package) + '$') } | Select-Object -First 1
             if (-not $line) {
-                Warn "No checksum entry for $package - skipping"
+                Warn "no checksum entry for ${package}: not verified"
             } else {
                 $expected = (($line -split '\s+')[0]).ToLower()
                 $actual   = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLower()
                 if ($actual -ne $expected) {
                     Die "Checksum mismatch!`n  expected: $expected`n  got:      $actual"
                 }
-                Ok 'SHA-256 verified'
+                Ok 'sha-256 verified'
             }
         }
 
         # -- 4. install ------------------------------------------------------
 
-        Step 4 'Installing'
+        Rule 4 'install'
 
-        Info 'Extracting archive...'
         Expand-Archive -Path $zip -DestinationPath $tmp -Force
         $extracted = Join-Path $tmp "$Binary.exe"
         if (-not (Test-Path $extracted)) { Die "Binary '$Binary.exe' not found inside the archive" }
@@ -154,9 +257,9 @@ function Install-Moon {
         }
 
         switch ($mode) {
-            'upgrade'   { Ok "Upgraded    $exe  (v$current -> v$version)" }
-            'reinstall' { Ok "Reinstalled $exe  (v$version)" }
-            default     { Ok "Installed   $exe  (v$version)" }
+            'upgrade'   { Ok "$exe  (v$current -> v$version)" }
+            'reinstall' { Ok "$exe  (reinstalled v$version)" }
+            default     { Ok "$exe  (v$version)" }
         }
     } finally {
         Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue
@@ -170,23 +273,21 @@ function Install-Moon {
         $newPath = if ($userPath) { "$userPath;$installDir" } else { $installDir }
         [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
         $env:Path = "$env:Path;$installDir"
-        Write-Host ''
-        Warn "Added $installDir to your user PATH. Open a new terminal to pick it up."
+        Warn "added $installDir to your user PATH: open a new terminal to pick it up"
     }
 
-    # -- done ----------------------------------------------------------------
+    # -- ready ---------------------------------------------------------------
 
+    Rule $null 'ready'
+
+    Cmd 'moon'             'start chatting'
+    Cmd 'moon ask "..."'   'one question, straight to stdout'
+    Cmd 'moon config init' 'writes %USERPROFILE%\.config\moon\config.toml'
+    Cmd 'moon update'      'when there is a new release'
     Write-Host ''
-    Write-Host '  All done!' -ForegroundColor Green
-    Write-Host ''
-    Write-Host '  Start:   ' -NoNewline; Write-Host 'moon' -ForegroundColor Cyan
-    Write-Host '  Ask:     ' -NoNewline; Write-Host 'moon ask "explain the borrow checker"' -ForegroundColor Cyan
-    Write-Host '  Config:  ' -NoNewline; Write-Host 'moon config init' -ForegroundColor Cyan -NoNewline
-    Write-Host '   (%USERPROFILE%\.config\moon\config.toml)' -ForegroundColor DarkGray
-    Write-Host ''
-    Write-Host '  moon talks to Ollama at http://localhost:11434 out of the box.' -ForegroundColor DarkGray
-    Write-Host '  Have it running with a model pulled:  ollama pull qwen2.5-coder:14b' -ForegroundColor DarkGray
-    Write-Host '  Use Windows Terminal or another terminal with ANSI colour support.' -ForegroundColor DarkGray
+    Note 'moon talks to Ollama at http://localhost:11434 out of the box.'
+    Note 'Have it running with a model pulled:  ollama pull qwen2.5-coder:14b'
+    Note 'Use Windows Terminal or another terminal with ANSI colour support.'
     Write-Host ''
 }
 

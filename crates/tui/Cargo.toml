@@ -13,6 +13,7 @@ clipboard = ["dep:arboard"]
 
 [dependencies]
 moon-core      = { workspace = true }
+moon-updater   = { workspace = true }
 anyhow         = { workspace = true }
 arboard        = { workspace = true, optional = true }
 base64         = { workspace = true }

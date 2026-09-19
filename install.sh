@@ -9,6 +9,9 @@
 #   MOON_INSTALL_DIR=/opt/bin  install to a custom directory
 #   MOON_VARIANT=musl          force the static musl binary on Linux (no glibc dep)
 #   MOON_VARIANT=gnu           force the glibc binary on Linux
+#   MOON_FORCE=1               install even if moon is already there and can
+#                              update itself (`moon update`)
+#   NO_COLOR=1                 no colour, whatever the terminal says
 
 set -e
 
@@ -17,26 +20,65 @@ BINARY="moon"
 GITHUB_API="https://api.github.com/repos/${REPO}"
 GITHUB_RELEASES="https://github.com/${REPO}/releases/download"
 
-# ── colours ──────────────────────────────────────────────────────────────────
+# ── the Moon palette ─────────────────────────────────────────────────────────
+# The same ten tokens as the TUI (crates/tui/src/theme.rs): the full hex when
+# the terminal announces truecolor, the xterm-256 approximation otherwise, and
+# nothing at all when the output is not a terminal.
 
-if [ -t 1 ]; then
-  BOLD='\033[1m';    RESET='\033[0m'
-  DIM='\033[2m'
-  CYAN='\033[0;36m'
-  RED='\033[0;31m';  YELLOW='\033[0;33m'
-  B_GREEN='\033[1;32m'; B_BLUE='\033[1;34m'; B_WHITE='\033[1;37m'
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+  BOLD='\033[1m'; DIM='\033[2m'; RESET='\033[0m'
+  case "${COLORTERM:-}" in
+    truecolor|24bit)
+      MOON='\033[38;2;143;184;255m'   # moon        #8fb8ff
+      INK='\033[38;2;243;236;227m'    # ink         #f3ece3
+      MUTED='\033[38;2;169;167;184m'  # ink-muted   #a9a7b8
+      LINE='\033[38;2;74;74;96m'      # night-line  #4a4a60
+      GREEN='\033[38;2;143;217;160m'  # ok          #8fd9a0
+      RED='\033[38;2;255;143;143m'    # alert       #ff8f8f
+      ;;
+    *)
+      MOON='\033[38;5;111m'; INK='\033[38;5;255m'; MUTED='\033[38;5;145m'
+      LINE='\033[38;5;239m'; GREEN='\033[38;5;115m'; RED='\033[38;5;210m'
+      ;;
+  esac
 else
-  BOLD=''; RESET=''; DIM=''
-  CYAN=''; RED=''; YELLOW=''
-  B_GREEN=''; B_BLUE=''; B_WHITE=''
+  BOLD=''; DIM=''; RESET=''
+  MOON=''; INK=''; MUTED=''; LINE=''; GREEN=''; RED=''
 fi
 
-step()  { printf "\n${BOLD}${CYAN}[%s/%s]${RESET} ${BOLD}%s${RESET}\n" "$1" "$2" "$3"; }
-info()  { printf "    ${DIM}%s${RESET}\n"  "$*"; }
-ok()    { printf "    ${B_GREEN}✓${RESET}  %s\n" "$*"; }
-die()   { printf "\n  ${RED}${BOLD}✗  %s${RESET}\n\n" "$*" >&2; exit 1; }
-warn()  { printf "    ${YELLOW}!${RESET}  %s\n" "$*"; }
-kv()    { printf "    ${DIM}%-14s${RESET} ${B_WHITE}%s${RESET}\n" "$1" "$2"; }
+# ── the pieces every block is drawn with ─────────────────────────────────────
+
+# Columns a rule spans, the two-space indent aside.
+RULE_W=66
+# Column the descriptions of a command list line up at.
+CMD_W=24
+
+_dashes() {
+  _n=$1; _s=''
+  while [ "$_n" -gt 0 ]; do _s="${_s}┄"; _n=$((_n - 1)); done
+  printf '%s' "$_s"
+}
+
+# Section heading: `┄ 2 · release ┄┄┄…`, the title in moon over a dashed rule.
+# The number is optional. Everything is ASCII, so bytes count as columns.
+rule() {
+  if [ -n "$1" ]; then
+    _label="$1 · $2"; _cols=$(( ${#1} + 3 + ${#2} ))
+  else
+    _label="$2"; _cols=${#2}
+  fi
+  _fill=$(( RULE_W - _cols - 3 ))
+  [ "$_fill" -lt 0 ] && _fill=0
+  printf "\n  ${LINE}┄${RESET} ${MOON}${BOLD}%s${RESET} ${LINE}%s${RESET}\n" \
+    "$_label" "$(_dashes "$_fill")"
+}
+
+kv()   { printf "     ${MUTED}%-13s${RESET}${INK}%b${RESET}\n" "$1" "$2"; }
+note() { printf "     ${MUTED}%s${RESET}\n" "$*"; }
+cmd()  { printf "     ${MOON}%-${CMD_W}s${RESET}${MUTED}%s${RESET}\n" "$1" "$2"; }
+ok()   { printf "     ${GREEN}✓${RESET} %b\n" "$*"; }
+warn() { printf "     ${RED}!${RESET} ${MUTED}%s${RESET}\n" "$*"; }
+die()  { printf "\n  ${RED}✗${RESET} %s\n\n" "$*" >&2; exit 1; }
 
 # ── requirements ─────────────────────────────────────────────────────────────
 
@@ -100,7 +142,7 @@ verify_checksum() {
   _expected=$(grep " ${_name}$" "$_sums" 2>/dev/null | awk '{print $1}')
 
   if [ -z "$_expected" ]; then
-    warn "No checksum entry for ${_name} — skipping"
+    warn "no checksum entry for ${_name}: not verified"
     return 0
   fi
 
@@ -109,7 +151,7 @@ verify_checksum() {
   elif command -v shasum >/dev/null 2>&1; then
     _actual=$(shasum -a 256 "$_file" | awk '{print $1}')
   else
-    warn "sha256sum / shasum not found — skipping checksum verification"
+    warn "sha256sum / shasum not found: not verified"
     return 0
   fi
 
@@ -118,7 +160,7 @@ verify_checksum() {
   expected: ${_expected}
   got:      ${_actual}"
 
-  ok "SHA-256 verified"
+  ok "sha-256 verified"
 }
 
 # ── install directory ─────────────────────────────────────────────────────────
@@ -135,22 +177,16 @@ default_install_dir() {
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Header
+# The mark of the Moon system, the same four rows the TUI opens with.
 printf "\n"
-printf "  ${B_BLUE}███╗   ███╗ ██████╗  ██████╗ ███╗   ██╗${RESET}\n"
-printf "  ${B_BLUE}████╗ ████║██╔═══██╗██╔═══██╗████╗  ██║${RESET}\n"
-printf "  ${B_BLUE}██╔████╔██║██║   ██║██║   ██║██╔██╗ ██║${RESET}\n"
-printf "  ${B_BLUE}██║╚██╔╝██║██║   ██║██║   ██║██║╚██╗██║${RESET}\n"
-printf "  ${B_BLUE}██║ ╚═╝ ██║╚██████╔╝╚██████╔╝██║ ╚████║${RESET}\n"
-printf "  ${B_BLUE}╚═╝     ╚═╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝${RESET}\n"
-printf "\n"
-printf "  ${DIM}Chat with local language models, from your terminal${RESET}\n"
-printf "\n"
-printf "  ${DIM}────────────────────────────────────────────${RESET}\n"
+printf "  ${MOON} ▄█     ${RESET}   ${MOON}${BOLD}moon${RESET}\n"
+printf "  ${MOON}███     ${RESET}   ${MUTED}chat with local language models,${RESET}\n"
+printf "  ${MOON}████▄▄▄█${RESET}   ${MUTED}from your terminal${RESET}\n"
+printf "  ${MOON} ▀████▀ ${RESET}   ${LINE}installer · github.com/${REPO}${RESET}\n"
 
-# ── step 1: detect platform ──────────────────────────────────────────
+# ── step 1: detect platform ──────────────────────────────────────────────────
 
-step 1 4 "Detecting platform"
+rule 1 platform
 
 OS=$(detect_os)
 ARCH=$(detect_arch)
@@ -159,31 +195,25 @@ VARIANT=""
 if [ "$OS" = "linux" ]; then
   if [ -n "${MOON_VARIANT:-}" ]; then
     VARIANT="$MOON_VARIANT"
-    info "Variant overridden via MOON_VARIANT=${VARIANT}"
   else
     VARIANT=$(detect_variant)
   fi
 fi
 
-kv "OS:"           "$OS"
-kv "Architecture:" "$ARCH"
-[ -n "$VARIANT" ] && kv "libc:" "$VARIANT"
-ok "Platform detected"
+kv "os" "$OS"
+kv "arch" "$ARCH"
+if [ -n "$VARIANT" ]; then
+  if [ -n "${MOON_VARIANT:-}" ]; then
+    kv "libc" "${VARIANT}  ${DIM}(MOON_VARIANT)${RESET}"
+  else
+    kv "libc" "$VARIANT"
+  fi
+fi
 
 # ── step 2: resolve version ──────────────────────────────────────────────────
 
-step 2 4 "Resolving version"
+rule 2 release
 
-VERSION="${MOON_VERSION:-}"
-if [ -z "$VERSION" ]; then
-  info "Querying GitHub releases API..."
-  VERSION=$(fetch_latest_version) || die "Could not fetch the latest version from GitHub"
-  [ -n "$VERSION" ] || die "No release found at https://github.com/${REPO}/releases"
-fi
-
-PACKAGE=$(build_package_name "$OS" "$ARCH" "$VARIANT")
-URL="${GITHUB_RELEASES}/v${VERSION}/${PACKAGE}"
-CHECKSUMS_URL="${GITHUB_RELEASES}/v${VERSION}/checksums.txt"
 INSTALL_DIR="${MOON_INSTALL_DIR:-$(default_install_dir)}"
 
 # Detect an existing installation
@@ -198,69 +228,93 @@ for _candidate in "${INSTALL_DIR}/${BINARY}" "$(command -v ${BINARY} 2>/dev/null
   fi
 done
 
-if [ -z "$CURRENT_VERSION" ]; then
-  MODE="install"
-  kv "Version:"    "v${VERSION}"
-  kv "Package:"    "$PACKAGE"
-  kv "Install to:" "${INSTALL_DIR}/${BINARY}"
-elif [ "$CURRENT_VERSION" = "$VERSION" ]; then
-  MODE="reinstall"
-  kv "Version:"    "v${VERSION} ${DIM}(already installed at ${EXISTING_PATH})${RESET}"
-  kv "Package:"    "$PACKAGE"
-  kv "Install to:" "${INSTALL_DIR}/${BINARY}"
-else
-  MODE="upgrade"
-  kv "Version:"    "${YELLOW}v${CURRENT_VERSION}${RESET}  →  ${B_GREEN}v${VERSION}${RESET}"
-  kv "Package:"    "$PACKAGE"
-  kv "Install to:" "${INSTALL_DIR}/${BINARY}"
+# moon updates itself, so this script is for the first install. Whether the
+# moon that is there can do it is asked of the binary and not of its version
+# number: one from before `moon update` existed is upgraded here as always.
+if [ -n "$CURRENT_VERSION" ] && [ -z "${MOON_FORCE:-}" ] \
+   && "$EXISTING_PATH" update --help >/dev/null 2>&1; then
+  kv "version" "v${CURRENT_VERSION}"
+  kv "path" "${EXISTING_PATH}"
+  ok "moon is already installed"
+  printf "\n"
+  printf "     ${INK}It updates itself.${RESET} ${MUTED}From here on:${RESET}\n"
+  printf "\n"
+  cmd "moon update" "the latest release"
+  cmd "moon update --check" "is there a new one?"
+  cmd "moon update --to 0.2.0" "that version, downgrades included"
+  cmd "moon update --force" "reinstall the one you have"
+  printf "\n"
+  note "to install with this script anyway:"
+  note "curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | MOON_FORCE=1 sh"
+  printf "\n"
+  exit 0
 fi
 
-ok "Version resolved"
+VERSION="${MOON_VERSION:-}"
+if [ -z "$VERSION" ]; then
+  note "asking github for the latest release…"
+  VERSION=$(fetch_latest_version) || die "Could not fetch the latest version from GitHub"
+  [ -n "$VERSION" ] || die "No release found at https://github.com/${REPO}/releases"
+fi
+
+PACKAGE=$(build_package_name "$OS" "$ARCH" "$VARIANT")
+URL="${GITHUB_RELEASES}/v${VERSION}/${PACKAGE}"
+CHECKSUMS_URL="${GITHUB_RELEASES}/v${VERSION}/checksums.txt"
+
+if [ -z "$CURRENT_VERSION" ]; then
+  MODE="install"
+  kv "version" "v${VERSION}"
+elif [ "$CURRENT_VERSION" = "$VERSION" ]; then
+  MODE="reinstall"
+  kv "version" "v${VERSION}  ${DIM}(already installed)${RESET}"
+else
+  MODE="upgrade"
+  kv "version" "${MUTED}v${CURRENT_VERSION}${RESET}  ${LINE}→${RESET}  ${MOON}v${VERSION}${RESET}"
+fi
+kv "package" "$PACKAGE"
+kv "install to" "${INSTALL_DIR}/${BINARY}"
 
 # ── confirmation ─────────────────────────────────────────────────────────────
 
-printf "\n"
 if [ -t 0 ] || [ -c /dev/tty ]; then
+  printf "\n"
   if [ "$MODE" = "reinstall" ]; then
-    printf "  ${YELLOW}Already at v${VERSION}.${RESET} Reinstall? [y/N] "
+    printf "     ${MUTED}already at v${VERSION} · reinstall?${RESET} ${INK}[y/N]${RESET} "
     read -r _reply </dev/tty
     case "$_reply" in
       [yY]*) ;;
-      *) printf "\n  Aborted.\n\n"; exit 0 ;;
+      *) printf "\n     ${MUTED}nothing was touched${RESET}\n\n"; exit 0 ;;
     esac
   else
     _action="install"
     [ "$MODE" = "upgrade" ] && _action="upgrade"
-    printf "  Press ${BOLD}Enter${RESET} to ${_action} or ${BOLD}Ctrl+C${RESET} to cancel... "
+    printf "     ${MUTED}press${RESET} ${INK}enter${RESET} ${MUTED}to ${_action}, or${RESET} ${INK}ctrl+c${RESET} ${MUTED}to cancel${RESET} "
     read -r _ </dev/tty
   fi
 fi
 
 # ── step 3: download & verify ────────────────────────────────────────────────
 
-step 3 4 "Downloading"
+rule 3 download
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
-info "URL: ${URL}"
+note "${URL}"
 curl -fL --progress-bar -o "${TMP}/${PACKAGE}" "$URL" \
   || die "Download failed. Check that release v${VERSION} has the asset ${PACKAGE}:
   https://github.com/${REPO}/releases/tag/v${VERSION}"
 
-ok "Downloaded ${PACKAGE}"
-
 if curl -fsSL -o "${TMP}/checksums.txt" "$CHECKSUMS_URL" 2>/dev/null; then
   verify_checksum "${TMP}/${PACKAGE}" "${TMP}/checksums.txt"
 else
-  warn "checksums.txt not available for v${VERSION}"
+  warn "checksums.txt not published for v${VERSION}: not verified"
 fi
 
 # ── step 4: install ──────────────────────────────────────────────────────────
 
-step 4 4 "Installing"
+rule 4 install
 
-info "Extracting archive..."
 tar -xzf "${TMP}/${PACKAGE}" -C "$TMP"
 [ -f "${TMP}/${BINARY}" ] || die "Binary '${BINARY}' not found inside the archive"
 
@@ -268,32 +322,29 @@ mkdir -p "$INSTALL_DIR"
 install -m 755 "${TMP}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 
 case "$MODE" in
-  upgrade)   ok "Upgraded    ${INSTALL_DIR}/${BINARY}  ${DIM}(v${CURRENT_VERSION} → v${VERSION})${RESET}" ;;
-  reinstall) ok "Reinstalled ${INSTALL_DIR}/${BINARY}  ${DIM}(v${VERSION})${RESET}" ;;
-  *)         ok "Installed   ${INSTALL_DIR}/${BINARY}  ${DIM}(v${VERSION})${RESET}" ;;
+  upgrade)   ok "${INSTALL_DIR}/${BINARY}  ${DIM}(v${CURRENT_VERSION} → v${VERSION})${RESET}" ;;
+  reinstall) ok "${INSTALL_DIR}/${BINARY}  ${DIM}(reinstalled v${VERSION})${RESET}" ;;
+  *)         ok "${INSTALL_DIR}/${BINARY}  ${DIM}(v${VERSION})${RESET}" ;;
 esac
 
 # PATH hint
 case ":${PATH}:" in
   *":${INSTALL_DIR}:"*) ;;
   *)
-    printf "\n"
     warn "${INSTALL_DIR} is not in your PATH"
-    warn "Add to your shell profile:  ${BOLD}export PATH=\"${INSTALL_DIR}:\$PATH\"${RESET}"
+    note "add to your shell profile:  export PATH=\"${INSTALL_DIR}:\$PATH\""
     ;;
 esac
 
 # ── done ─────────────────────────────────────────────────────────────────────
 
+rule "" ready
+
+cmd "moon" "start chatting"
+cmd "moon ask \"...\"" "one question, straight to stdout"
+cmd "moon config init" "writes ~/.config/moon/config.toml"
+cmd "moon update" "when there is a new release"
 printf "\n"
-printf "  ${DIM}────────────────────────────────────────────${RESET}\n"
-printf "\n"
-printf "  ${B_GREEN}${BOLD}All done!${RESET}\n"
-printf "\n"
-printf "  ${BOLD}Start:${RESET}   ${CYAN}${BINARY}${RESET}\n"
-printf "  ${BOLD}Ask:${RESET}     ${CYAN}${BINARY} ask \"explain the borrow checker\"${RESET}\n"
-printf "  ${BOLD}Config:${RESET}  ${CYAN}${BINARY} config init${RESET}   ${DIM}(~/.config/moon/config.toml)${RESET}\n"
-printf "\n"
-printf "  ${DIM}moon talks to Ollama at http://localhost:11434 out of the box.${RESET}\n"
-printf "  ${DIM}Have it running with a model pulled:  ollama pull qwen2.5-coder:14b${RESET}\n"
+note "moon talks to Ollama at http://localhost:11434 out of the box."
+note "Have it running with a model pulled:  ollama pull qwen2.5-coder:14b"
 printf "\n"

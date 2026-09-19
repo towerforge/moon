@@ -33,6 +33,10 @@ pub struct GeneralConfig {
     pub max_attachment_bytes: usize,
     /// Machine CPU and RAM at the bottom right: every 5 s, every second while the model is working.
     pub system_stats: bool,
+    /// Ask GitHub once a day whether there is a newer moon and say so at
+    /// startup. Off by default: the only traffic moon makes is to the
+    /// providers, unless this is turned on. `moon update` checks anyway.
+    pub update_check: bool,
 }
 
 impl Default for GeneralConfig {
@@ -45,6 +49,7 @@ impl Default for GeneralConfig {
             context_file: crate::context::DEFAULT_CONTEXT_FILE.to_string(),
             max_attachment_bytes: crate::context::DEFAULT_MAX_BYTES,
             system_stats: true,
+            update_check: false,
         }
     }
 }
@@ -165,6 +170,8 @@ mod tests {
         let cfg = Config::parse(TEMPLATE, Path::new("plantilla")).unwrap();
         assert!(cfg.general.mouse);
         assert!(cfg.general.save_sessions);
+        // nothing reaches out to github unless it is asked for
+        assert!(!cfg.general.update_check);
         let ollama = &cfg.providers["ollama"];
         assert_eq!(ollama.kind, "ollama");
         assert_eq!(ollama.base_url.as_deref(), Some("http://localhost:11434"));

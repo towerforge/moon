@@ -10,6 +10,7 @@ save_sessions    = true
 context_file     = "MOON.md"  # project context file, loaded from the start directory into the system prompt
 max_attachment_bytes = 200000 # bigger @files are truncated
 system_stats     = true       # cpu and ram of the machine at the bottom right, sampled every 5 s (every second while the model works)
+update_check     = false      # ask github once a day for a newer moon and say so at startup; `moon update` checks and installs on demand
 
 [params]                      # defaults for every model; /params changes them for one session
 # Ollama loads the model with this window, not with the one the model

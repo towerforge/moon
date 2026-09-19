@@ -61,6 +61,22 @@ enum Cmd {
         #[command(subcommand)]
         action: SessionsCmd,
     },
+    /// Update moon: checks GitHub and installs the new release
+    Update {
+        /// Say what there is and install nothing
+        #[arg(long)]
+        check: bool,
+        /// Install without asking
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Install over a cargo install or a build under target/, and
+        /// reinstall a version that is already there
+        #[arg(long)]
+        force: bool,
+        /// A specific version instead of the latest one
+        #[arg(long, value_name = "VERSION")]
+        to: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -115,6 +131,16 @@ async fn main() -> anyhow::Result<()> {
     if let Some(Cmd::Config { action }) = &cli.cmd {
         return config_cmd(action, &config_path, &paths);
     }
+    // updating needs no providers and must work with a broken configuration
+    if let Some(Cmd::Update {
+        check,
+        yes,
+        force,
+        to,
+    }) = &cli.cmd
+    {
+        return update_cmd(*check, *yes, *force, to.as_deref(), &config_path, &paths).await;
+    }
 
     let (cfg, source) = Config::load_or_default(&config_path)?;
     let registry = Arc::new(build_registry(&cfg)?);
@@ -152,8 +178,39 @@ async fn main() -> anyhow::Result<()> {
         Some(Cmd::Sessions {
             action: SessionsCmd::List,
         }) => sessions_list(store.as_ref(), &paths),
-        Some(Cmd::Config { .. }) => unreachable!("handled earlier"),
+        Some(Cmd::Config { .. }) | Some(Cmd::Update { .. }) => unreachable!("handled earlier"),
     }
+}
+
+/// `moon update`. The panel is moon's own, so it takes the theme from the
+/// configuration; an unreadable configuration is no reason not to update.
+async fn update_cmd(
+    check: bool,
+    yes: bool,
+    force: bool,
+    to: Option<&str>,
+    config_path: &std::path::Path,
+    paths: &Paths,
+) -> anyhow::Result<()> {
+    let to = to.map(str::parse::<moon_updater::Version>).transpose()?;
+    let overrides = Config::load_or_default(config_path)
+        .map(|(cfg, _)| cfg.theme.overrides)
+        .unwrap_or_default();
+    let outcome = moon_tui::update::run(moon_tui::update::Options {
+        current: env!("CARGO_PKG_VERSION").parse()?,
+        to,
+        check_only: check,
+        yes,
+        force,
+        state_dir: Some(paths.state_dir.clone()),
+        theme: moon_tui::Theme::resolve(&overrides).0,
+    })
+    .await?;
+    // what went wrong has already been said, in the panel or on stderr
+    if outcome == moon_tui::update::Outcome::Failed {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 fn shorten_home(p: &std::path::Path) -> String {

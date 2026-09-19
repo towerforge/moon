@@ -14,6 +14,14 @@ impl App {
             self.handle_panel_key(key, tx);
             return;
         }
+        // a mouse selection in the box lasts until the next key: esc is there
+        // only to drop it, anything else drops it and goes on
+        if self.input.has_selection() {
+            self.input.clear_selection();
+            if key.code == KeyCode::Esc {
+                return;
+            }
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -305,6 +313,11 @@ impl App {
     /// deleting or renaming the highlighted session, keeping the list to
     /// return to it.
     pub(super) fn open_session_action(&mut self, delete: bool) {
+        // deleting and renaming belong to the sessions list; from any other
+        // panel the key does nothing, and above all does not close it
+        if !matches!(self.panel, Some(Panel::Sessions(_))) {
+            return;
+        }
         let Some(Panel::Sessions(p)) = self.panel.take() else {
             return;
         };
@@ -313,16 +326,13 @@ impl App {
             return;
         };
         let (id, title) = (it.id.clone(), it.label.clone());
-        if delete && self.session.as_ref().is_some_and(|s| s.id == id) {
-            self.notify("that's the open conversation: /new first, then delete it");
-            self.panel = Some(Panel::Sessions(p));
-            return;
-        }
         let action = if delete {
+            let open = self.session.as_ref().is_some_and(|s| s.id == id);
             SessionAction::Delete {
                 id,
                 title,
                 choice: Choice::Delete,
+                open,
             }
         } else {
             SessionAction::Rename { id, input: title }
@@ -344,7 +354,9 @@ impl App {
         };
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let next = match &mut action {
-            SessionAction::Delete { id, title, choice } => match key.code {
+            SessionAction::Delete {
+                id, title, choice, ..
+            } => match key.code {
                 KeyCode::Esc | KeyCode::Char('n') => Next::Back,
                 KeyCode::Char('c') if ctrl => Next::Back,
                 // two options, one under the other: the same cursor as any
@@ -422,6 +434,14 @@ impl App {
             .delete(id)
             .map_err(|e| format!("could not delete: {e}"))?;
         self.forget_session(id);
+        // deleting the one you are in only unhooks it: what is on screen
+        // stays, and the next message opens a new session
+        if self.session.as_ref().is_some_and(|s| s.id == id) {
+            self.session = None;
+            return Ok(format!(
+                "session deleted: {title} · this conversation is no longer saved"
+            ));
+        }
         Ok(format!("session deleted: {title}"))
     }
 

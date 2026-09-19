@@ -23,11 +23,11 @@
 - **Local first.** Talks to Ollama over its native API, so it knows what only Ollama can tell: context windows, quantization, which model is in memory and how much it takes. Any OpenAI-compatible server (LM Studio, llama.cpp, vLLM, OpenRouter…) plugs in with three lines of configuration.
 - **A real chat interface.** Streaming Markdown with syntax-highlighted code, a status line that shows what the model is doing, tokens sent and received, speed, and how much of the context window the conversation fills.
 - **Your files, your rules.** Attach a file or a line range with `@path`, keep files attached for the whole conversation from the files panel (`Ctrl+F`), and put a `MOON.md` in a project so the model knows what it is looking at. moon never runs tools or writes to disk on the model's behalf.
-- **Sessions that survive.** Every conversation is saved as JSONL. Resume the last one, pick any from a list that puts the five you last opened on top and sorts the rest by title, rename, delete, export to Markdown.
+- **Sessions that survive.** Every conversation is saved as JSONL. Resume the last one, pick any from a list sorted by title — with the five you last opened on top once there are enough of them to be worth it — rename, delete, export to Markdown.
 - **Switch models mid-conversation.** A fuzzy list that unfolds at the bottom, grouped by provider, with your recent models on top once there are enough of them to be worth it. The history stays; the next question goes to the new model.
 - **The machine, always in view.** CPU and RAM in the corner, with the peak of the last three minutes, and the loaded model's footprint next to it. When a model spills to the CPU or to swap, you see it before you feel it.
 - **Scriptable.** `moon ask` streams a reply to stdout, reads the prompt from a pipe, and prints token stats to stderr.
-- **Fast, small, private.** One Rust binary. No telemetry, no network traffic except to the providers you configure.
+- **Fast, small, private.** One Rust binary. No telemetry, no network traffic except to the providers you configure: `moon update` goes to GitHub when you run it, and the start-up check stays off until you turn it on.
 
 ## Installation
 
@@ -39,13 +39,14 @@ moon is one binary with nothing else to install. It runs on macOS, Linux and Win
 curl -fsSL https://raw.githubusercontent.com/towerforge/moon/main/install.sh | sh
 ```
 
-The installer detects your OS and architecture, downloads the latest release, verifies its SHA-256 and installs `moon` to `/usr/local/bin` when run as root, otherwise to `~/.local/bin`. Run it again to upgrade.
+The installer detects your OS and architecture, downloads the latest release, verifies its SHA-256 and installs `moon` to `/usr/local/bin` when run as root, otherwise to `~/.local/bin`. It is for the first install: run it again with moon already there and it stops and points you at `moon update`, which is what upgrades from then on.
 
 | Variable | Effect |
 |---|---|
 | `MOON_INSTALL_DIR=/your/path` | install somewhere else |
 | `MOON_VERSION=0.2.0` | install a specific version instead of the latest |
 | `MOON_VARIANT=musl` · `gnu` | force the static (musl) or the glibc binary on Linux |
+| `MOON_FORCE=1` | install over a moon that is already there instead of pointing at `moon update` |
 
 #### Windows
 
@@ -53,7 +54,7 @@ The installer detects your OS and architecture, downloads the latest release, ve
 irm https://raw.githubusercontent.com/towerforge/moon/main/install.ps1 | iex
 ```
 
-Installs `moon.exe` to `%LOCALAPPDATA%\Programs\moon`, verifies its SHA-256 and adds that folder to your user `PATH`. Set `$env:MOON_INSTALL_DIR` to install somewhere else and `$env:MOON_VERSION` to pin a version. Run it again to upgrade.
+Installs `moon.exe` to `%LOCALAPPDATA%\Programs\moon`, verifies its SHA-256 and adds that folder to your user `PATH`. Set `$env:MOON_INSTALL_DIR` to install somewhere else and `$env:MOON_VERSION` to pin a version, and `$env:MOON_FORCE = "1"` to install over a moon that is already there. As on Linux and macOS, upgrading is `moon update`'s job — and the PowerShell installer cannot replace a `moon.exe` that is running, while `moon update` can.
 
 #### Manual download
 
@@ -80,6 +81,26 @@ Pre-built binaries are on the [releases page](https://github.com/towerforge/moon
 | Platform | Asset |
 |---|---|
 | x86_64 | `moon-windows-x86_64.zip` |
+
+#### Updating
+
+```sh
+moon update          # what the new release brings, and it installs it once you say yes
+moon update --check  # says what there is and installs nothing
+```
+
+This is the only way moon upgrades: the installers above do the first install and then step aside. `moon update` downloads the release for your platform, checks its SHA-256 against `checksums.txt` and swaps the binary in place: the one that is running stays until the new one is written. It only replaces a binary that came from a release: one from `cargo install` or a build under `target/` is left alone, and it says so.
+
+| Flag | Effect |
+|---|---|
+| `--check` | check and report, install nothing |
+| `-y` · `--yes` | install without asking; required when the output is not a terminal |
+| `--to 0.2.0` | that version instead of the latest, downgrades included |
+| `--force` | reinstall the same version, or overwrite a `cargo install` or a local build |
+
+If the binary lives where you cannot write, `sudo moon update` does it; and `install.sh` with `MOON_FORCE=1` is always there as a way back in.
+
+moon does not look for updates by itself. With `update_check = true` under `[general]` it asks GitHub once a day and, when there is something newer, says so at startup next to the version.
 
 #### From source
 
@@ -211,7 +232,7 @@ Type `/` and the commands that match appear over the box, drawn like the panel: 
 | `Ctrl+W` · `Ctrl+U` · `Ctrl+K` | delete word · to line start · to line end |
 | `Ctrl+A` · `Ctrl+E` | start · end of line |
 
-The mouse works too: the wheel scrolls, dragging over the conversation selects text and copies it when you let go, a click in the input box moves the cursor, and the «↓ Jump to bottom» pill is clickable. To select text with your terminal instead, hold `Shift` while dragging, or set `mouse = false`.
+The mouse works too: the wheel scrolls, dragging over the conversation selects text and copies it when you let go, and the «↓ Jump to bottom» pill is clickable. In the input box a click moves the cursor and a drag selects what you are writing — it is copied when you let go, and the next key drops the highlight without touching the text. To select text with your terminal instead, hold `Shift` while dragging, or set `mouse = false`.
 
 ### Files in the context
 
@@ -233,7 +254,7 @@ moon --resume <id>       # or a specific one
 moon sessions list
 ```
 
-Inside the TUI, `Ctrl+S` opens the panel: `Recent` holds the five sessions you last opened or wrote to, in that order, and `All` holds every one of them sorted by title, ignoring case. No dates on screen, only the title and the model it ran on; `moon sessions list` still prints them with their date. `Enter` resumes, `Ctrl+R` renames, `Ctrl+D` deletes, each in the same panel. `/save name` renames the current conversation; `/export notes.md` writes it as Markdown. Set `save_sessions = false` to keep nothing.
+Inside the TUI, `Ctrl+S` opens the panel: `All` holds every session sorted by title, ignoring case, and from ten sessions on a `Recent` section on top holds the five you last opened or wrote to, in that order. Below ten the list is in view whole and `Recent` would only repeat it, so it is not drawn. No dates on screen, only the title and the model it ran on; `moon sessions list` still prints them with their date. `Enter` resumes, `Ctrl+R` renames, `Ctrl+D` deletes, each in the same panel. Deleting the conversation you are in is allowed: the file goes and what is on screen simply stops being saved, so the next message starts a new session. `/save name` renames the current conversation; `/export notes.md` writes it as Markdown. Set `save_sessions = false` to keep nothing.
 
 ### The CLI
 
@@ -250,6 +271,8 @@ moon --config ./moon.toml                      # another configuration file
 moon models                                    # models of every provider
 moon providers                                 # provider status
 moon config init | path | show
+moon update                                    # update to the latest release
+moon update --check                            # is there a new version?
 ```
 
 A model is `provider/model`, or just `model` when the name is unique across providers.
@@ -264,7 +287,7 @@ Everything is optional. Without a file, moon talks to Ollama at `http://localhos
 |---|---|
 | Configuration | `~/.config/moon/config.toml` |
 | Sessions | `~/.local/share/moon/sessions/` |
-| Log, recent models and recent sessions | `~/.local/state/moon/` |
+| Log, recent models, recent sessions and the last update check | `~/.local/state/moon/` |
 
 The same XDG layout on macOS and Linux; `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME` are honored. On Windows the same folders hang from `%USERPROFILE%`, so the configuration is `%USERPROFILE%\.config\moon\config.toml`.
 
@@ -279,6 +302,7 @@ save_sessions    = true
 context_file     = "MOON.md"  # project context file; "" for none
 max_attachment_bytes = 200000 # bigger @files are truncated
 system_stats     = true       # cpu and ram at the bottom right
+update_check     = false      # ask github once a day for a newer moon and say so at startup
 
 [params]                      # defaults for every model; /params overrides them per session
 num_ctx     = 16384           # the window Ollama loads the model with

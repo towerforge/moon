@@ -16,6 +16,7 @@ moon-core            = { workspace = true }
 moon-provider-ollama = { workspace = true }
 moon-provider-openai = { workspace = true }
 moon-tui             = { workspace = true }
+moon-updater         = { workspace = true }
 anyhow               = { workspace = true }
 chrono               = { workspace = true }
 clap                 = { workspace = true }

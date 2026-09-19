@@ -15,7 +15,7 @@ impl App {
     pub(crate) fn model_picker(&self, query: &str) -> Picker {
         // with few models they all fit under their provider: repeating some of
         // them on top helps nobody
-        let recent: Vec<String> = if self.models.len() < RECENT_MIN_MODELS {
+        let recent: Vec<String> = if self.models.len() < RECENT_MIN {
             Vec::new()
         } else {
             self.recent
@@ -100,12 +100,17 @@ impl App {
             dim: false,
             group: Some(group.to_string()),
         };
-        // the recent ones keep the order they were opened in, not the alphabet
-        let recent: Vec<&SessionMeta> = self
-            .recent_sessions
-            .iter()
-            .filter_map(|id| list.iter().find(|m| &m.id == id))
-            .collect();
+        // the recent ones keep the order they were opened in, not the
+        // alphabet; with few sessions the whole list is right there and
+        // repeating some on top helps nobody
+        let recent: Vec<&SessionMeta> = if list.len() < RECENT_MIN {
+            Vec::new()
+        } else {
+            self.recent_sessions
+                .iter()
+                .filter_map(|id| list.iter().find(|m| &m.id == id))
+                .collect()
+        };
         let mut items: Vec<PickerItem> = recent.iter().map(|m| item(m, RECENT_GROUP)).collect();
         items.extend(list.iter().map(|m| item(m, ALL_GROUP)));
         let mut p = Picker::new("Resume a session", items, "");

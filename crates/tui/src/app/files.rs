@@ -331,8 +331,8 @@ impl App {
                 files.push(item);
             }
         }
-        folders.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
-        files.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+        folders.sort_by_key(|i| i.label.to_lowercase());
+        files.sort_by_key(|i| i.label.to_lowercase());
         let mut items = Vec::new();
         // the way out, at the top, as one more folder
         if dir.parent().is_some() {

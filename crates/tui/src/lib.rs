@@ -12,6 +12,7 @@ pub mod picker;
 pub mod run;
 pub mod sysmon;
 pub mod theme;
+pub mod update;
 pub mod view;
 pub mod wrap;
 

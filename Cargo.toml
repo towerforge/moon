@@ -1,0 +1,60 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/providers/ollama",
+    "crates/providers/openai",
+    "crates/tui",
+    "crates/cli",
+]
+
+[workspace.package]
+version      = "0.1.1"
+edition      = "2021"
+rust-version = "1.88"
+license      = "MIT"
+repository   = "https://github.com/towerforge/moon"
+
+[workspace.dependencies]
+moon-core            = { path = "crates/core" }
+moon-provider-ollama = { path = "crates/providers/ollama" }
+moon-provider-openai = { path = "crates/providers/openai" }
+moon-tui             = { path = "crates/tui" }
+
+ratatui            = "0.30"
+crossterm          = { version = "0.29", features = ["event-stream"] }
+tokio              = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "io-std", "signal"] }
+tokio-util         = { version = "0.7", features = ["io"] }
+futures-util       = "0.3"
+async-stream       = "0.3"
+async-trait        = "0.1"
+bytes              = "1"
+reqwest            = { version = "0.13", features = ["json", "stream"] }
+eventsource-stream = "0.2"
+serde              = { version = "1", features = ["derive"] }
+serde_json         = "1"
+toml               = "1"
+thiserror          = "2"
+anyhow             = "1"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender   = "0.2"
+clap               = { version = "4", features = ["derive", "env"] }
+chrono             = { version = "0.4", features = ["serde"] }
+uuid               = { version = "1", features = ["v4"] }
+pulldown-cmark     = { version = "0.13", default-features = false }
+syntect            = { version = "5", default-features = false, features = ["parsing", "default-syntaxes", "regex-fancy", "dump-load"] }
+nucleo-matcher     = "0.3"
+unicode-width      = "0.2"
+arboard            = { version = "3", default-features = false }
+base64             = "0.22"
+sysinfo            = { version = "0.38", default-features = false, features = ["system"] }
+
+# dev
+wiremock = "0.6"
+tempfile = "3"
+
+[profile.release]
+lto           = "thin"
+codegen-units = 1
+strip         = true

@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges" width="980" height="614" viewBox="0 0 980 614">
+<rect width="980" height="614" fill="#1c1c29"/>
+<rect x="0.5" y="0.5" width="979" height="613" fill="none" stroke="#4a4a60"/>
+<rect x="40.5" y="37.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="48.9" y="26.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="48.9" y="37.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="32.0" y="48.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="32.0" y="59.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="40.5" y="48.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="40.5" y="59.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="48.9" y="48.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="48.9" y="59.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="32.0" y="70.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="32.0" y="81.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="40.5" y="70.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="40.5" y="81.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="48.9" y="70.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="48.9" y="81.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="57.3" y="70.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="57.3" y="81.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="65.8" y="81.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="74.2" y="81.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="82.7" y="81.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="91.1" y="70.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="91.1" y="81.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="40.5" y="92.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="48.9" y="92.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="48.9" y="103.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="57.3" y="92.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="57.3" y="103.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="65.8" y="92.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="65.8" y="103.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="74.2" y="92.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="74.2" y="103.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<rect x="82.7" y="92.0" width="8.45" height="11.0" fill="#8fb8ff"/>
+<text x="124.94999999999999" y="42" xml:space="preserve" text-anchor="start" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#f3ece3" font-weight="700">moon</tspan><tspan fill="#a9a7b8"> v0.1.0</tspan></text>
+<text x="124.94999999999999" y="64" xml:space="preserve" text-anchor="start" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#f3ece3">qwen2.5-coder:14b</tspan><tspan fill="#a9a7b8"> (ctx 32k) · ollama · localhost:11434</tspan></text>
+<text x="124.94999999999999" y="86" xml:space="preserve" text-anchor="start" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#a9a7b8">~/projects/moon</tspan></text>
+<text x="32" y="152" xml:space="preserve" text-anchor="start" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#8fb8ff">▌ </tspan><tspan fill="#a9a7b8">how do I squash my last three commits before pushing? @notes.md</tspan></text>
+<text x="32" y="196" xml:space="preserve" text-anchor="start" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#f3ece3">Rebase interactively onto the commit before them and mark the last two</tspan></text>
+<text x="32" y="218" xml:space="preserve" text-anchor="start" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#f3ece3">as </tspan><tspan fill="#c7dbff">squash</tspan><tspan fill="#f3ece3">:</tspan></text>
+<rect x="24" y="246" width="932" height="28" fill="#2a2a3c"/>
+<text x="40" y="265" xml:space="preserve" text-anchor="start" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#f3ece3">git rebase -i HEAD~3</tspan></text>
+<text x="32" y="312" xml:space="preserve" text-anchor="start" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#f3ece3">Change </tspan><tspan fill="#c7dbff">pick</tspan><tspan fill="#f3ece3"> to </tspan><tspan fill="#c7dbff">squash</tspan><tspan fill="#f3ece3"> on lines 2 and 3, save, then edit the combined</tspan></text>
+<text x="32" y="334" xml:space="preserve" text-anchor="start" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#f3ece3">message. Push with </tspan><tspan fill="#c7dbff">--force-with-lease</tspan><tspan fill="#f3ece3"> if the branch was already published.</tspan></text>
+<text x="32" y="378" xml:space="preserve" text-anchor="start" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#8fb8ff" font-weight="700">## Before you do it</tspan></text>
+<text x="32" y="422" xml:space="preserve" text-anchor="start" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#f3ece3">Make sure nobody else has built on those commits: rewriting shared</tspan></text>
+<text x="32" y="444" xml:space="preserve" text-anchor="start" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#f3ece3">history forces everyone to rebase.</tspan></text>
+<text x="32" y="488" xml:space="preserve" text-anchor="start" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#8fd9a0">✓ done</tspan><tspan fill="#a9a7b8"> (4s · ↑ 1.2k · ↓ 96 tokens · 41 tok/s)</tspan></text>
+<text x="948" y="488" xml:space="preserve" text-anchor="end" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#a9a7b8">context 4% · session 1.3k tok (4s · ↑ 1.2k · ↓ 96)</tspan></text>
+<line x1="24" y1="504" x2="956" y2="504" stroke="#4a4a60" stroke-width="1"/>
+<text x="32" y="532" xml:space="preserve" text-anchor="start" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#8fb8ff">❯ </tspan></text>
+<rect x="50" y="519" width="9" height="17" fill="#8fb8ff"/>
+<line x1="24" y1="548" x2="956" y2="548" stroke="#4a4a60" stroke-width="1"/>
+<text x="32" y="576" xml:space="preserve" text-anchor="start" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#a9a7b8"> /model switch model · ctrl+s sessions · /help</tspan></text>
+<text x="948" y="576" xml:space="preserve" text-anchor="end" font-family="'IBM Plex Mono','JetBrains Mono',Menlo,'DejaVu Sans Mono',ui-monospace,monospace" font-size="14"><tspan fill="#a9a7b8">qwen2.5-coder:14b · 12.1G · cpu </tspan><tspan fill="#c7dbff">34%</tspan><tspan fill="#a9a7b8"> ▲61 · ram </tspan><tspan fill="#c7dbff">57%</tspan><tspan fill="#a9a7b8"> ▲75 </tspan></text>
+</svg>

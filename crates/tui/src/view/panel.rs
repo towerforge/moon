@@ -379,13 +379,25 @@ fn digits(n: usize) -> usize {
 /// the same cursor as any other list, or the new title being typed.
 fn action_content(t: &Theme, action: &SessionAction, w: usize) -> Content {
     let (title, hint, body) = match action {
-        SessionAction::Delete { title, choice, .. } => (
+        SessionAction::Delete {
+            title,
+            choice,
+            open,
+            ..
+        } => (
             "Delete session",
             Line::from(Span::styled(
-                format!(
-                    " «{}» · the saved conversation file is removed",
-                    truncate(title, w.saturating_sub(46))
-                ),
+                if *open {
+                    format!(
+                        " «{}» · the one you are in: what is on screen stops being saved",
+                        truncate(title, w.saturating_sub(62))
+                    )
+                } else {
+                    format!(
+                        " «{}» · the saved conversation file is removed",
+                        truncate(title, w.saturating_sub(46))
+                    )
+                },
                 t.muted(),
             )),
             vec![
@@ -552,6 +564,7 @@ const BASICS: &[(&str, &str)] = &[
 const WHERE: &[&str] = &[
     "A MOON.md in the project is read into every conversation; /context shows what the model is actually sent.",
     "Conversations are saved as they go and `moon config init` writes the configuration file.",
+    "`moon update` brings in the latest release from GitHub; with update_check = true moon says at startup when there is one.",
 ];
 
 /// The `General` tab: what moon is, the basics, and where its files are.

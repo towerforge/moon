@@ -23,12 +23,15 @@ impl App {
             self.follow = true;
             return;
         }
+        // in the box the drag selects what is being written, to copy it
         if let Some(r) = self.input_area.filter(|r| r.contains(pos)) {
             if self.panel.is_none() {
-                self.input.click(r.width, x - r.x, y - r.y);
+                self.input.select_from(r.width, x - r.x, y - r.y);
+                self.input_drag = true;
             }
             return;
         }
+        self.input.clear_selection();
         if self.conv_area.is_some_and(|r| r.contains(pos)) {
             if let Some(p) = self.doc_pos(x, y) {
                 self.selection = Some(Selection {
@@ -41,6 +44,14 @@ impl App {
     }
 
     pub(super) fn mouse_drag(&mut self, x: u16, y: u16) {
+        if self.input_drag {
+            if let Some(r) = self.input_area {
+                let x = x.clamp(r.x, r.right().saturating_sub(1).max(r.x));
+                let y = y.clamp(r.y, r.bottom().saturating_sub(1).max(r.y));
+                self.input.select_to(r.width, x - r.x, y - r.y);
+            }
+            return;
+        }
         let Some(sel) = self.selection.as_mut() else {
             return;
         };
@@ -66,6 +77,19 @@ impl App {
     }
 
     pub(super) fn mouse_up(&mut self, x: u16, y: u16) {
+        // what was selected in the box goes to the clipboard on letting go,
+        // like a selection over the conversation
+        if self.input_drag {
+            self.mouse_drag(x, y);
+            self.input_drag = false;
+            let text = self.input.selection_text();
+            if text.is_empty() {
+                self.input.clear_selection();
+                return;
+            }
+            self.copy_selection(&text);
+            return;
+        }
         let Some(sel) = self.selection.as_mut() else {
             return;
         };
@@ -88,8 +112,12 @@ impl App {
             self.selection = None;
             return;
         }
+        self.copy_selection(&text);
+    }
+
+    fn copy_selection(&mut self, text: &str) {
         let n = text.chars().count();
-        match crate::clipboard::copy(&text) {
+        match crate::clipboard::copy(text) {
             Ok(via) => self.notify(format!("selection copied · {n} chars ({via})")),
             Err(e) => self.notify(format!("could not copy: {e}")),
         }
@@ -232,6 +260,12 @@ impl App {
             Span::styled("moon", t.accent_bold()),
             Span::styled(format!(" v{}", self.version), t.muted()),
         ];
+        let update_line = self.update_available.as_ref().map(|v| {
+            vec![
+                Span::styled(format!("↑ v{v} available"), t.accent()),
+                Span::styled(" · run `moon update`", t.muted()),
+            ]
+        });
         let cwd_line = vec![Span::styled(self.cwd.clone(), t.muted())];
         let config_line = self.default_config.then(|| {
             vec![Span::styled(
@@ -258,7 +292,10 @@ impl App {
             }
             lines
         };
-        let mut right = vec![name_line, model_line, cwd_line];
+        let mut right = vec![name_line];
+        right.extend(update_line);
+        right.push(model_line);
+        right.push(cwd_line);
         right.extend(config_line);
         with_logo(logo_rows(), right, LOGO_COLS)
     }

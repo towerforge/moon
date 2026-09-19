@@ -233,6 +233,7 @@ fn dialogos_de_sesion() {
             id: "x".into(),
             title: "explica el módulo de sesiones".into(),
             choice: Choice::Delete,
+            open: false,
         },
     });
     let mut term = Terminal::new(TestBackend::new(90, 26)).unwrap();

@@ -21,7 +21,13 @@ pub struct ChatInput {
     col: usize,
     pub max_height: u16,
     scroll: usize,
+    /// Mouse selection over what is being written: where the drag started and
+    /// where it is now, each as (line, character). Not ordered.
+    sel: Option<(Pos, Pos)>,
 }
+
+/// A place in the text: logical line and character index within it.
+type Pos = (usize, usize);
 
 impl Default for ChatInput {
     fn default() -> Self {
@@ -49,6 +55,7 @@ impl ChatInput {
             col: 0,
             max_height: 8,
             scroll: 0,
+            sel: None,
         }
     }
 
@@ -334,6 +341,75 @@ impl ChatInput {
         self.col = self.cur_len();
     }
 
+    // ----- mouse selection --------------------------------------------------
+
+    /// Starts a selection where the click lands; the cursor goes there too.
+    pub fn select_from(&mut self, width: u16, x: u16, y: u16) {
+        self.click(width, x, y);
+        let at = (self.row, self.col);
+        self.sel = Some((at, at));
+    }
+
+    /// Drags the open selection to where the mouse is.
+    pub fn select_to(&mut self, width: u16, x: u16, y: u16) {
+        if self.sel.is_none() {
+            return;
+        }
+        self.click(width, x, y);
+        if let Some((_, head)) = self.sel.as_mut() {
+            *head = (self.row, self.col);
+        }
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.sel.is_some()
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.sel = None;
+    }
+
+    /// The selection, ordered: (start, end), end excluded.
+    fn bounds(&self) -> Option<(Pos, Pos)> {
+        let (a, b) = self.sel?;
+        Some(if a <= b { (a, b) } else { (b, a) })
+    }
+
+    /// Text under the selection, empty if it is only a caret.
+    pub fn selection_text(&self) -> String {
+        let Some(((r1, c1), (r2, c2))) = self.bounds() else {
+            return String::new();
+        };
+        let take = |line: &str, from: usize, to: usize| -> String {
+            line.chars()
+                .skip(from)
+                .take(to.saturating_sub(from))
+                .collect()
+        };
+        if r1 == r2 {
+            return take(&self.lines[r1], c1, c2);
+        }
+        let mut out = vec![take(&self.lines[r1], c1, usize::MAX)];
+        for line in &self.lines[r1 + 1..r2] {
+            out.push(line.clone());
+        }
+        out.push(take(&self.lines[r2], 0, c2));
+        out.join("\n")
+    }
+
+    /// Whether the character `col` of `line` falls inside the selection.
+    fn is_selected(&self, line: usize, col: usize) -> bool {
+        let Some(((r1, c1), (r2, c2))) = self.bounds() else {
+            return false;
+        };
+        if line < r1 || line > r2 {
+            return false;
+        }
+        let from = if line == r1 { c1 } else { 0 };
+        let to = if line == r2 { c2 } else { usize::MAX };
+        col >= from && col < to
+    }
+
     /// Height it needs for `width` total columns (prompt included).
     pub fn height(&self, width: u16) -> u16 {
         let text_w = (width as usize).saturating_sub(PROMPT_WIDTH).max(1);
@@ -369,21 +445,29 @@ impl ChatInput {
             .map(|(i, r)| {
                 let prompt = if i + self.scroll == 0 { PROMPT } else { "  " };
                 let mut spans = vec![Span::styled(prompt, theme.accent())];
-                // command range that falls in this row (only on the first line)
-                let n_cmd = if r.line == 0 && cmd_chars > r.start {
-                    (cmd_chars - r.start).min(r.text.chars().count())
-                } else {
-                    0
-                };
-                if n_cmd > 0 {
-                    let split = Self::byte_idx(&r.text, n_cmd);
-                    spans.push(Span::styled(
-                        r.text[..split].to_string(),
-                        theme.accent_bold(),
-                    ));
-                    spans.push(Span::styled(r.text[split..].to_string(), theme.text()));
-                } else {
-                    spans.push(Span::styled(r.text.clone(), theme.text()));
+                // one style per character — command prefix, selection, plain
+                // text — and consecutive characters of the same style joined
+                let mut run = String::new();
+                let mut run_style = None;
+                for (ci, ch) in r.text.chars().enumerate() {
+                    let col = r.start + ci;
+                    let style = if self.is_selected(r.line, col) {
+                        theme.selected()
+                    } else if r.line == 0 && col < cmd_chars {
+                        theme.accent_bold()
+                    } else {
+                        theme.text()
+                    };
+                    if run_style != Some(style) {
+                        if let Some(st) = run_style {
+                            spans.push(Span::styled(std::mem::take(&mut run), st));
+                        }
+                        run_style = Some(style);
+                    }
+                    run.push(ch);
+                }
+                if let Some(st) = run_style {
+                    spans.push(Span::styled(run, st));
                 }
                 Line::from(spans)
             })
@@ -398,6 +482,42 @@ impl ChatInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seleccion_con_el_raton() {
+        let mut i = ChatInput::new();
+        i.insert_str("hola mundo");
+        // «mundo»: de la columna 5 a la 10, con el prompt de por medio
+        i.select_from(20, PROMPT_WIDTH as u16 + 5, 0);
+        i.select_to(20, PROMPT_WIDTH as u16 + 10, 0);
+        assert!(i.has_selection());
+        assert_eq!(i.selection_text(), "mundo");
+        // arrastrar hacia atrás da lo mismo
+        i.select_from(20, PROMPT_WIDTH as u16 + 10, 0);
+        i.select_to(20, PROMPT_WIDTH as u16 + 5, 0);
+        assert_eq!(i.selection_text(), "mundo");
+        // un clic sin arrastre no selecciona nada
+        i.select_from(20, PROMPT_WIDTH as u16 + 2, 0);
+        assert_eq!(i.selection_text(), "");
+        i.clear_selection();
+        assert!(!i.has_selection());
+        assert_eq!(i.selection_text(), "");
+    }
+
+    #[test]
+    fn la_seleccion_cruza_lineas() {
+        let mut i = ChatInput::new();
+        i.set_text("una\ndos\ntres");
+        i.select_from(20, PROMPT_WIDTH as u16 + 1, 0);
+        i.select_to(20, PROMPT_WIDTH as u16 + 2, 2);
+        assert_eq!(i.selection_text(), "na\ndos\ntr");
+        // y lo que se ve seleccionado son esos caracteres, no otros
+        assert!(!i.is_selected(0, 0));
+        assert!(i.is_selected(0, 1));
+        assert!(i.is_selected(1, 0));
+        assert!(i.is_selected(2, 1));
+        assert!(!i.is_selected(2, 2));
+    }
 
     #[test]
     fn edicion_basica() {

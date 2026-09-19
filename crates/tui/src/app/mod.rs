@@ -59,6 +59,8 @@ pub enum Action {
     Stream(u64, StreamEvent),
     SessionLoaded(Box<Session>),
     Notice(String),
+    /// The daily check found a newer moon on GitHub.
+    UpdateAvailable(String),
     /// CPU and RAM reading from the `sysmon` thread.
     SysSample(crate::sysmon::Sample),
     /// Time to ask the provider whether it has the model loaded.
@@ -184,6 +186,8 @@ pub enum SessionAction {
         id: String,
         title: String,
         choice: Choice,
+        /// Whether it is the conversation open right now.
+        open: bool,
     },
     Rename {
         id: String,
@@ -319,9 +323,9 @@ const RECENT_MAX: usize = 5;
 const RECENT_MODELS_FILE: &str = "recent_models";
 const RECENT_SESSIONS_FILE: &str = "recent_sessions";
 const RECENT_GROUP: &str = "Recent";
-/// Below this many models the whole list is in view: a `Recent` section would
-/// only say twice what is already there.
-const RECENT_MIN_MODELS: usize = 10;
+/// Below this many entries a list is in view whole, and a `Recent` section on
+/// top would only say twice what is already there.
+const RECENT_MIN: usize = 10;
 const ALL_GROUP: &str = "All";
 /// Sections of the files panel and of the tree it browses.
 const ATTACHED_GROUP: &str = "Attached";
@@ -381,6 +385,9 @@ pub struct App {
     /// Last sessions opened or written to, by id, most recent first.
     pub recent_sessions: Vec<String>,
     recent_sessions_file: Option<PathBuf>,
+    /// Newer version published, when `update_check` is on and there is one.
+    pub update_available: Option<String>,
+    state_dir: Option<PathBuf>,
     pub last_usage: Option<Usage>,
     pub last_run: Option<RunSummary>,
     pub loading: bool,
@@ -406,6 +413,8 @@ pub struct App {
     pub conv_area: Option<ratatui::layout::Rect>,
     /// Input box area in the last paint: a click moves the cursor.
     pub input_area: Option<ratatui::layout::Rect>,
+    /// A drag that started inside the box: it selects what is being written.
+    input_drag: bool,
     pub selection: Option<Selection>,
     pub notice: Option<(String, Instant)>,
     pub should_quit: bool,
@@ -514,6 +523,8 @@ impl App {
             recent_file,
             recent_sessions: models::load_recent(recent_sessions_file.as_deref()),
             recent_sessions_file,
+            update_available: None,
+            state_dir: opts.state_dir.clone(),
             last_usage: None,
             last_run: None,
             loading: true,
@@ -533,6 +544,7 @@ impl App {
             jump_rect: None,
             conv_area: None,
             input_area: None,
+            input_drag: false,
             selection: None,
             notice: None,
             should_quit: false,
@@ -628,6 +640,7 @@ impl App {
         if self.cfg.general.system_stats {
             crate::sysmon::spawn(tx.clone(), self.sys_pace.clone());
         }
+        self.check_for_updates(tx);
         // the loaded model is polled at the same slow pace as the machine
         let tx_poll = tx.clone();
         tokio::spawn(async move {
@@ -637,6 +650,28 @@ impl App {
                 if tx_poll.send(Action::PollLoaded).is_err() {
                     break;
                 }
+            }
+        });
+    }
+
+    /// Asks GitHub for the newest moon, at most once a day and only when the
+    /// configuration says so: without `update_check` nothing leaves the
+    /// machine but the requests to the providers.
+    fn check_for_updates(&self, tx: &Tx) {
+        if !self.cfg.general.update_check {
+            return;
+        }
+        let Ok(current) = self.version.parse::<moon_updater::Version>() else {
+            return;
+        };
+        let state_dir = self.state_dir.clone();
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let ttl = moon_updater::cache::TTL;
+            if let Some(v) =
+                moon_updater::cache::newer_than(&current, state_dir.as_deref(), ttl).await
+            {
+                let _ = tx.send(Action::UpdateAvailable(v.to_string()));
             }
         });
     }
@@ -815,6 +850,8 @@ impl App {
                 self.notify("session resumed");
             }
             Action::Notice(s) => self.notify(s),
+            // the welcome block is built on every paint: nothing to invalidate
+            Action::UpdateAvailable(v) => self.update_available = Some(v),
             Action::Quit => self.should_quit = true,
         }
     }

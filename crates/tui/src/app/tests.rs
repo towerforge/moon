@@ -547,9 +547,27 @@ async fn selector_de_sesiones_por_orden_alfabetico() {
     assert_eq!(cur.detail, "ollama/m");
     assert!(p.visible().all(|(i, _, _)| !i.detail.contains(':')));
 
-    // opening one puts it on top, in `Recent`, without leaving the full list
+    // opening one is remembered, but with three sessions `Recent` would only
+    // repeat what is already in view
     app.load_session(&alfa.id, &tx);
     app.load_session(&media.id, &tx);
+    app.open_sessions_picker();
+    let Some(Panel::Sessions(p)) = &app.panel else {
+        panic!("el selector sigue abierto");
+    };
+    assert!(p.groups.iter().all(|g| g.title != "Recent"));
+    // and the order is remembered anyway, run to run
+    assert_eq!(
+        load_recent(app.recent_sessions_file.as_deref()),
+        vec![media.id.clone(), alfa.id.clone()]
+    );
+
+    // from ten sessions on the list no longer fits at a glance and the
+    // section earns its place, with the last one opened on top
+    let store = app.store.as_ref().unwrap();
+    for i in 0..7 {
+        store.create(&format!("relleno {i}"), None, None).unwrap();
+    }
     app.open_sessions_picker();
     let Some(Panel::Sessions(p)) = &app.panel else {
         panic!("el selector sigue abierto");
@@ -561,27 +579,38 @@ async fn selector_de_sesiones_por_orden_alfabetico() {
         .collect();
     assert_eq!(
         groups,
-        vec![("Recent", "2 sessions"), ("All", "3 sessions")]
+        vec![("Recent", "2 sessions"), ("All", "10 sessions")]
     );
-    // the most recent one first, and the whole list still below
-    let labels: Vec<&str> = p.visible().map(|(i, _, _)| i.label.as_str()).collect();
+    let labels: Vec<&str> = p
+        .visible()
+        .map(|(i, _, _)| i.label.as_str())
+        .take(3)
+        .collect();
     assert_eq!(
         labels,
-        vec![
-            "Media, con mayúscula",
-            "alfa primera",
-            "alfa primera",
-            "Media, con mayúscula",
-            "zeta final"
-        ]
+        vec!["Media, con mayúscula", "alfa primera", "alfa primera"]
     );
-    // rows: header, 2, blank, header, 3
-    assert_eq!(p.rows().len(), 8);
-    // and the order survives the run
-    assert_eq!(
-        load_recent(app.recent_sessions_file.as_deref()),
-        vec![media.id.clone(), alfa.id.clone()]
-    );
+    // rows: header, 2, blank, header, 10
+    assert_eq!(p.rows().len(), 15);
+}
+
+#[tokio::test]
+async fn ctrl_d_y_ctrl_r_no_cierran_los_demas_paneles() {
+    use moon_core::ModelInfo;
+    let (mut app, tx, _rx) = app();
+    app.models = vec![
+        ModelInfo::new("ollama", "m1"),
+        ModelInfo::new("ollama", "m2"),
+    ];
+    // delete and rename belong to the sessions list; anywhere else they do
+    // nothing, and above all they do not close the panel
+    app.panel = Some(Panel::Models(app.model_picker("")));
+    app.update(ctrl('d'), &tx);
+    assert!(matches!(app.panel, Some(Panel::Models(_))));
+    app.update(key(KeyCode::Delete), &tx);
+    assert!(matches!(app.panel, Some(Panel::Models(_))));
+    app.update(ctrl('r'), &tx);
+    assert!(matches!(app.panel, Some(Panel::Models(_))));
 }
 
 #[tokio::test]
@@ -596,13 +625,18 @@ async fn borrar_y_renombrar_desde_el_selector() {
     app.session = Some(open.clone());
     let list = |app: &App| app.store.as_ref().unwrap().list().unwrap();
     app.open_sessions_picker();
-    // the cursor starts on the open one: it cannot be deleted, and nothing opens
+    // the cursor starts on the open one, and it can be deleted like any
+    // other: the dialog says it is the one you are in
     app.update(ctrl('d'), &tx);
-    assert!(app
-        .notice
-        .as_ref()
-        .is_some_and(|(n, _)| n.contains("open conversation")));
-    assert!(matches!(app.panel, Some(Panel::Sessions(_))));
+    let Some(Panel::SessionAction {
+        action: SessionAction::Delete { open: is_open, .. },
+        ..
+    }) = &app.panel
+    else {
+        panic!("the delete dialog should be open");
+    };
+    assert!(*is_open);
+    app.update(key(KeyCode::Esc), &tx);
     // on «vieja», ctrl+d opens the dialog with «Delete» highlighted; esc goes back
     app.update(key(KeyCode::Down), &tx);
     app.update(ctrl('d'), &tx);
@@ -614,7 +648,8 @@ async fn borrar_y_renombrar_desde_el_selector() {
         SessionAction::Delete {
             id: old.id.clone(),
             title: "vieja".into(),
-            choice: Choice::Delete
+            choice: Choice::Delete,
+            open: false,
         }
     );
     assert!(app.panel_keys().contains(&("esc", "keep")));
@@ -669,6 +704,17 @@ async fn borrar_y_renombrar_desde_el_selector() {
     app.update(key(KeyCode::Esc), &tx);
     assert_eq!(list(&app)[0].title, "abierta y renombrada");
     assert!(matches!(app.panel, Some(Panel::Sessions(_))));
+
+    // and the one you are in can be deleted too: the file goes and what is on
+    // screen simply stops being saved
+    app.update(ctrl('d'), &tx);
+    app.update(key(KeyCode::Enter), &tx);
+    assert!(app.session.is_none());
+    assert!(app
+        .notice
+        .as_ref()
+        .is_some_and(|(n, _)| n.contains("no longer saved")));
+    assert!(list(&app).is_empty());
 }
 
 #[tokio::test]
@@ -711,6 +757,39 @@ async fn scroll_de_la_ayuda() {
     assert!(app.panel_keys().contains(&("tab", "section")));
     app.update(key(KeyCode::Esc), &tx);
     assert!(app.panel.is_none());
+}
+
+#[tokio::test]
+async fn seleccion_con_el_raton_en_la_caja() {
+    let (mut app, tx, _rx) = app();
+    app.loading = false;
+    type_text(&mut app, &tx, "hola mundo");
+    let area = ratatui::layout::Rect::new(0, 10, 40, 1);
+    app.input_area = Some(area);
+    let px = crate::input::PROMPT_WIDTH as u16;
+    // arrastrar sobre «mundo» y soltar lo deja seleccionado y copiado
+    app.update(Action::MouseDown(px + 5, 10), &tx);
+    app.update(Action::MouseDrag(px + 10, 10), &tx);
+    app.update(Action::MouseUp(px + 10, 10), &tx);
+    assert_eq!(app.input.selection_text(), "mundo");
+    assert!(app.input.has_selection());
+    assert!(
+        app.notice
+            .as_ref()
+            .is_some_and(|(n, _)| n.contains("5 chars")),
+        "{:?}",
+        app.notice
+    );
+    // el texto no se toca: seleccionar no edita
+    assert_eq!(app.input.text(), "hola mundo");
+    // la siguiente tecla se la lleva por delante
+    app.update(key(KeyCode::Esc), &tx);
+    assert!(!app.input.has_selection());
+    assert_eq!(app.input.text(), "hola mundo");
+    // y un clic suelto no selecciona nada
+    app.update(Action::MouseDown(px + 2, 10), &tx);
+    app.update(Action::MouseUp(px + 2, 10), &tx);
+    assert!(!app.input.has_selection());
 }
 
 #[tokio::test]
@@ -803,4 +882,30 @@ async fn zz_look() {
             .collect();
         println!("|{}|", row.trim_end());
     }
+}
+
+#[tokio::test]
+async fn el_aviso_de_version_nueva_sale_en_la_bienvenida() {
+    let (mut app, tx, _rx) = app();
+    let text = |app: &App| {
+        app.welcome_lines()
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let before = app.welcome_lines().len();
+    assert!(!text(&app).contains("available"));
+
+    app.update(Action::UpdateAvailable("0.2.0".into()), &tx);
+    let out = text(&app);
+    assert!(out.contains("↑ v0.2.0 available"), "{out}");
+    assert!(out.contains("moon update"), "{out}");
+    // the block grows by that one line and nothing else moves
+    assert_eq!(app.welcome_lines().len(), before + 1);
 }

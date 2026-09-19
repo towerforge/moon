@@ -844,17 +844,17 @@ impl App {
                             }
                         }
                     }
-                    Some(c) if c.provider == id => {
-                        if !self
-                            .models
-                            .iter()
-                            .any(|m| m.provider == id && m.id == c.model)
-                        {
-                            self.notify(format!(
-                                "model {} is not available on {}: /model to pick another",
-                                c.model, id
-                            ));
-                        }
+                    Some(c)
+                        if c.provider == id
+                            && !self
+                                .models
+                                .iter()
+                                .any(|m| m.provider == id && m.id == c.model) =>
+                    {
+                        self.notify(format!(
+                            "model {} is not available on {}: /model to pick another",
+                            c.model, id
+                        ));
                     }
                     _ => {}
                 }

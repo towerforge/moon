@@ -48,10 +48,19 @@ Adding a provider is a new crate that implements `Provider` and
 
 ## Releasing
 
-1. `make set-version x.y.z` writes the new version to `VERSION`, `Cargo.toml`
-   and `Cargo.lock`. Review the diff and commit it on `dev`.
-2. `make release` tags `v$VERSION` and pushes the tag. It refuses to run if
-   `VERSION` and `Cargo.toml` disagree or the working tree is dirty.
+1. `make release`, from `dev`, does the whole thing: it proposes the next
+   version (patch, minor, major or one you type), writes it to `VERSION`,
+   `Cargo.toml` and `Cargo.lock`, shows a summary and asks before touching
+   anything. On a yes it commits the bump on `dev`, pushes it, merges `dev`
+   into `main` with `--no-ff`, tags `vX.Y.Z` and pushes the branch and the
+   tag, leaving you back on `dev`.
+2. From `main` it is a promotion: the version is kept, and the tag is created
+   and pushed if it was not there yet. From any other branch it refuses, as it
+   does with a dirty tree, with no `origin`, or when `VERSION` and
+   `Cargo.toml` disagree. If the merge collides only in `VERSION` it resolves
+   it with the release version; any other conflict aborts the merge and leaves
+   you back on `dev` with nothing published. `make set-version x.y.z` is still
+   there to bump by hand.
 3. The tag triggers the `release` workflow: it builds `moon` for every Linux,
    macOS and Windows target, writes `checksums.txt` and publishes the GitHub
    release. `install.sh`, `install.ps1` and the download tables in the README

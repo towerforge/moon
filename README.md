@@ -183,10 +183,12 @@ qwen2.5-coder:14b · 12.1G · cpu 34% ▲61 · ram 57% ▲75
 
 - `12.1G` is what the model takes in memory: weights plus the context cache, so it depends on `num_ctx` as much as on the model. If it is there, the model is loaded. If it is missing, the next request pays the loading time. Only Ollama can report this.
 - If the model does not fit in the GPU, `30% cpu` appears in bold: that is when generation crawls.
-- `cpu` and `ram` are sampled every 5 seconds, every second while the model is thinking or answering. After `▲`, the peak of the last 3 minutes. `swap 1.2G` appears only when swap is in use.
+- `cpu` and `ram` are sampled every 5 seconds, and twice a second while the model is thinking or answering or the `/machine` panel is open. After `▲`, the peak of the last 3 minutes. `swap 1.2G` appears only when swap is in use.
 - Below 120 columns the peaks and the model size go; below 90, the whole block. `system_stats = false` turns the machine readings off.
 
 `/context` prints the same in gigabytes, with the split between weights and context cache and how long until Ollama unloads the model.
+
+`/machine` opens the same readings as a drawing: the panel splits down the middle, cpu on the left and ram on the right, each filled in braille — 2×4 dots per cell — from the curve down. The window is the one the sampler keeps, so the plot fills from the right as samples pile up; under it go swap and what the loaded model takes. `Esc` closes it.
 
 ### Slash commands
 
@@ -208,6 +210,7 @@ Type `/` and the commands that match appear over the box, drawn like the panel: 
 | `/undo` | remove the last question/reply pair |
 | `/files` | attached files: see what they cost, detach them and add more (also `Ctrl+F`) |
 | `/context` | what the model sees: context file, attached files, token budget, machine |
+| `/machine` | cpu, ram and swap drawn over the last 3 minutes |
 | `/help` | commands and keys, in a scrollable panel |
 | `/quit` | quit |
 

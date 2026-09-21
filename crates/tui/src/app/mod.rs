@@ -151,6 +151,9 @@ pub enum Panel {
         dir: PathBuf,
     },
     Help(HelpState),
+    /// cpu and ram drawn over the last three minutes. It holds no state: it
+    /// reads `sys`, which the sampler keeps up to date.
+    Machine,
     /// What is being decided about a session, in the sessions list's place;
     /// the list is kept so we can return to it as it was.
     SessionAction {
@@ -166,7 +169,7 @@ impl Panel {
         match self {
             Panel::Models(p) | Panel::Sessions(p) | Panel::Files(p) => Some(p),
             Panel::Browse { picker, .. } => Some(picker),
-            Panel::Help(_) | Panel::SessionAction { .. } => None,
+            Panel::Help(_) | Panel::Machine | Panel::SessionAction { .. } => None,
         }
     }
 
@@ -174,7 +177,7 @@ impl Panel {
         match self {
             Panel::Models(p) | Panel::Sessions(p) | Panel::Files(p) => Some(p),
             Panel::Browse { picker, .. } => Some(picker),
-            Panel::Help(_) | Panel::SessionAction { .. } => None,
+            Panel::Help(_) | Panel::Machine | Panel::SessionAction { .. } => None,
         }
     }
 }
@@ -749,8 +752,11 @@ impl App {
         let was_streaming = self.is_streaming();
         self.apply(action, tx);
         let streaming = self.is_streaming();
-        // the machine is watched more closely while the model thinks or replies
-        self.sys_pace.set_fast(streaming);
+        // the machine is watched more closely while the model thinks or
+        // replies, and while the panel that draws it is open: at the idle
+        // pace the plot would step once every five seconds
+        let watching = matches!(self.panel, Some(Panel::Machine));
+        self.sys_pace.set_fast(streaming || watching);
         // once a reply finishes the model is certainly in memory
         if was_streaming && !streaming {
             self.fetch_loaded(tx);

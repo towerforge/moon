@@ -315,6 +315,7 @@ impl App {
             Some(Panel::Help(_)) => {
                 vec![("tab", "section"), ("↑↓", "scroll"), ("esc", "close")]
             }
+            Some(Panel::Machine) => vec![("esc", "close")],
             Some(Panel::SessionAction { action, .. }) => match action {
                 SessionAction::Delete { .. } => {
                     vec![("↑↓", "choose"), ("enter", "confirm"), ("esc", "keep")]

@@ -12,6 +12,7 @@ use crate::picker::{Picker, PickerGroup, Row};
 use crate::theme::Theme;
 use crate::wrap::{truncate, width, wrap_line};
 
+mod machine;
 mod panel;
 #[cfg(test)]
 mod tests;

@@ -168,6 +168,7 @@ impl App {
             }
             Command::Files => self.open_files_panel(),
             Command::Context => self.show_context(),
+            Command::Machine => self.panel = Some(Panel::Machine),
             Command::Help => self.panel = Some(Panel::Help(HelpState::default())),
             Command::Quit => self.should_quit = true,
         }

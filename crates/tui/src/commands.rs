@@ -78,6 +78,11 @@ pub const SPECS: &[Spec] = &[
         help: "what the model sees: context file, attached files, token budget",
     },
     Spec {
+        name: "machine",
+        args: "",
+        help: "cpu, ram and swap drawn over the last 3 minutes",
+    },
+    Spec {
         name: "help",
         args: "",
         help: "this help",
@@ -149,6 +154,8 @@ pub enum Command {
     Undo,
     Files,
     Context,
+    /// The machine drawn: cpu and ram over the window `sysmon` keeps.
+    Machine,
     Help,
     Quit,
 }
@@ -184,6 +191,7 @@ pub fn parse(input: &str) -> Result<Command, String> {
         // one panel, and the old names open it
         "files" | "attach" | "add" | "drop" => Command::Files,
         "context" | "ctx" => Command::Context,
+        "machine" => Command::Machine,
         "help" | "?" => Command::Help,
         "quit" | "exit" | "q" => Command::Quit,
         "" => return Err("type a command after the slash; /help lists them".into()),
@@ -213,6 +221,8 @@ mod tests {
         // the model is not typed in: `/model` opens the list, and what may
         // come after it is not a model to pick
         assert_eq!(parse("/model"), Ok(Command::Model));
+        assert_eq!(parse("/machine"), Ok(Command::Machine));
+        assert!(parse("/cpu").is_err());
         assert_eq!(parse("/model qwen"), Ok(Command::Model));
         assert_eq!(parse("/m"), Ok(Command::Model));
         assert_eq!(

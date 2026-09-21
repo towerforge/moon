@@ -773,3 +773,100 @@ fn suggestions_above_the_box() {
         .add_modifier
         .contains(ratatui::style::Modifier::BOLD));
 }
+
+#[test]
+fn panel_de_la_maquina_con_braille() {
+    use std::time::{Duration, Instant};
+    let mut app = app();
+    app.loading = false;
+    let tx = tx_dummy();
+    // three minutes of samples: a sawtooth for the cpu, something flat for ram
+    let base = Instant::now() - Duration::from_secs(180);
+    for i in 0..36u64 {
+        let cpu = (i % 12) as f32 * 8.0;
+        app.sys.push_at(
+            base + Duration::from_secs(i * 5),
+            crate::sysmon::Sample::new(cpu, 16 << 30, 32 << 30, 0),
+        );
+    }
+    for c in "/machine".chars() {
+        app.update(key(crossterm::event::KeyCode::Char(c)), &tx);
+    }
+    app.update(key(crossterm::event::KeyCode::Enter), &tx);
+    assert!(matches!(app.panel, Some(Panel::Machine)));
+
+    let mut term = Terminal::new(TestBackend::new(78, 24)).unwrap();
+    term.draw(|f| view(&mut app, f)).unwrap();
+    let rows = screen(&term);
+    let s = rows.join("\n");
+    // titled and counted like any other panel, and with its own footer
+    assert!(s.contains(" Machine"), "{s}");
+    assert!(s.contains("3 min · 36 samples"), "{s}");
+    assert!(s.contains("esc close"), "{s}");
+    // the readings: the current value, the peak of the window and the totals
+    assert!(s.contains("cpu"), "{s}");
+    assert!(s.contains("▲88%"), "{s}");
+    assert!(s.contains("ram"), "{s}");
+    assert!(s.contains("16.0 / 32.0G"), "{s}");
+    assert!(s.contains("no swap"), "{s}");
+    // drawn with braille, and with the input box out of the way
+    assert!(
+        s.chars()
+            .filter(|c| ('\u{2800}'..='\u{28ff}').contains(c))
+            .count()
+            > 100,
+        "{s}"
+    );
+    assert!(!rows.iter().any(|r| r.starts_with("❯ ")), "{s}");
+
+    // the cpu trace goes in moon and the ram one in moon-soft, over a grid in
+    // night-line
+    // both headings share a row, cpu on the left of the rule and ram on its
+    // right, and each plot stays in its half
+    let buf = term.backend().buffer();
+    let head_y = rows.iter().position(|r| r.contains("ram")).unwrap();
+    let head = &rows[head_y];
+    let rule = head.chars().position(|c| c == '│').unwrap();
+    assert!(head.find("cpu").unwrap() < rule, "{head}");
+    assert!(head.find("ram").unwrap() > rule, "{head}");
+    let plots = head_y + 1..rows.iter().position(|r| r.contains("no swap")).unwrap();
+    let colors = |cols: std::ops::Range<u16>| {
+        let mut v = Vec::new();
+        for y in plots.clone() {
+            for x in cols.clone() {
+                if buf[(x, y as u16)].symbol() != " " {
+                    v.push(buf[(x, y as u16)].style().fg);
+                }
+            }
+        }
+        v
+    };
+    let left = colors(0..rule as u16);
+    let right = colors(rule as u16 + 1..78);
+    assert!(left.contains(&Some(app.theme.moon)), "traza de la cpu");
+    assert!(
+        !left.contains(&Some(app.theme.moon_soft)),
+        "la ram invade la cpu"
+    );
+    assert!(
+        right.contains(&Some(app.theme.moon_soft)),
+        "traza de la ram"
+    );
+    // filled from the curve down: the floor of the plot comes out solid
+    let floor = plots
+        .clone()
+        .rfind(|y| {
+            rows[*y]
+                .chars()
+                .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
+        })
+        .unwrap();
+    let solid = (0..rule as u16)
+        .filter(|x| buf[(*x, floor as u16)].symbol() == "⣿")
+        .count();
+    assert!(solid > 20, "suelo relleno: {solid}\n{}", rows[floor]);
+
+    // esc closes it and the box comes back
+    app.update(key(crossterm::event::KeyCode::Esc), &tx);
+    assert!(app.panel.is_none());
+}

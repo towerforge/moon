@@ -149,6 +149,12 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let outcome = match self.panel.as_mut() {
+            // nothing to walk: it only closes
+            Some(Panel::Machine) => match key.code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => Outcome::Close,
+                KeyCode::Char('c') if ctrl => Outcome::Close,
+                _ => Outcome::Nothing,
+            },
             Some(Panel::Help(h)) => match key.code {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => {
                     Outcome::Close

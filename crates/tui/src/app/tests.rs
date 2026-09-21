@@ -51,6 +51,13 @@ fn sampling_runs_fast_while_the_model_works() {
     app.gen = Generation::Idle;
     app.update(Action::Tick, &tx);
     assert!(!app.sys_pace.is_fast());
+    // and while the panel that draws it is open
+    app.panel = Some(Panel::Machine);
+    app.update(Action::Tick, &tx);
+    assert!(app.sys_pace.is_fast());
+    app.panel = None;
+    app.update(Action::Tick, &tx);
+    assert!(!app.sys_pace.is_fast());
 }
 
 #[tokio::test]

@@ -6,7 +6,7 @@
 use super::*;
 
 /// Fixed rows of a panel: title, hint, blank, …body…, blank, footer.
-const CHROME: u16 = 5;
+pub(super) const CHROME: u16 = 5;
 /// Rows the conversation keeps however much the panel would like to grow.
 const CONV_MIN: u16 = 3;
 /// What sits between the conversation and the panel: the status row and the
@@ -39,6 +39,7 @@ pub(super) fn height(app: &App, area: Rect) -> u16 {
         }
         Panel::Browse { picker, .. } => picker.rows().len().clamp(1, list_body(area)),
         Panel::Help(h) => help_body(app, h, area),
+        Panel::Machine => machine::BODY,
         Panel::SessionAction { action, .. } => match action {
             SessionAction::Delete { .. } => 2,
             SessionAction::Rename { .. } => 1,
@@ -65,6 +66,11 @@ struct Content {
 
 pub(super) fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     if area.height == 0 {
+        return;
+    }
+    // the only panel that is not a list of lines: it draws its own area
+    if matches!(app.panel, Some(Panel::Machine)) {
+        machine::render(app, frame, area);
         return;
     }
     let t = app.theme.clone();

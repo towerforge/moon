@@ -1,7 +1,8 @@
-//! Machine readings for the bottom-right corner: CPU and RAM as percentages
-//! (and swap, if any), sampled on a dedicated thread every 5 s when idle and
-//! every second while the model thinks or replies, plus the peak over the
-//! last 3 minutes. It matters because the models run locally: if RAM runs
+//! Machine readings for the bottom-right corner and for the `/machine`
+//! panel: CPU and RAM as percentages (and swap, if any), sampled on a
+//! dedicated thread every 5 s when idle and twice a second while the model
+//! thinks or replies or the panel is open, plus the peak over the last 3
+//! minutes. It matters because the models run locally: if RAM runs
 //! out or the model falls into swap, generation crawls.
 
 use std::collections::VecDeque;
@@ -15,8 +16,10 @@ use crate::app::{Action, Tx};
 
 /// How often a sample is taken when idle.
 pub const IDLE_INTERVAL: Duration = Duration::from_secs(5);
-/// How often while the model thinks or replies.
-pub const BUSY_INTERVAL: Duration = Duration::from_secs(1);
+/// How often while the model thinks or replies, or while the panel that
+/// draws the machine is open. Above sysinfo's minimum interval for a
+/// trustworthy cpu reading (200 ms).
+pub const BUSY_INTERVAL: Duration = Duration::from_millis(500);
 /// Window over which the peak is computed.
 pub const WINDOW: Duration = Duration::from_secs(180);
 
@@ -61,7 +64,8 @@ impl Sample {
 }
 
 /// Sampling pace, shared with the thread: the interface sets it to fast while
-/// the model works and back to slow when it finishes.
+/// there is something worth watching closely and back to slow when there is
+/// not.
 #[derive(Debug, Clone, Default)]
 pub struct Pace(Arc<AtomicBool>);
 
@@ -118,6 +122,27 @@ impl History {
         self.samples.iter().map(|(_, s)| s.ram).fold(0.0, f32::max)
     }
 
+    /// Points for a chart, oldest first: on `x`, seconds from now (negative,
+    /// down to `-WINDOW`); on `y`, what `value` reads from the sample.
+    pub fn series_at(&self, now: Instant, value: impl Fn(&Sample) -> f32) -> Vec<(f64, f64)> {
+        self.samples
+            .iter()
+            .map(|(t, s)| (-now.duration_since(*t).as_secs_f64(), value(s) as f64))
+            .collect()
+    }
+
+    pub fn series(&self, value: impl Fn(&Sample) -> f32) -> Vec<(f64, f64)> {
+        self.series_at(Instant::now(), value)
+    }
+
+    /// Span the samples cover, in seconds.
+    pub fn span(&self) -> f64 {
+        match (self.samples.front(), self.samples.back()) {
+            (Some((a, _)), Some((b, _))) => b.duration_since(*a).as_secs_f64(),
+            _ => 0.0,
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.samples.len()
     }
@@ -158,6 +183,8 @@ pub fn spawn(tx: Tx, pace: Pace) {
                     }
                     last = Some(Instant::now());
                 }
+                // the shortest pace there is: any longer and a change of pace
+                // would take that long to be noticed
                 std::thread::sleep(BUSY_INTERVAL);
             }
         });
@@ -213,12 +240,31 @@ mod tests {
     }
 
     #[test]
+    fn the_series_puts_the_newest_sample_at_zero() {
+        let base = Instant::now();
+        let mut h = History::default();
+        h.push_at(base, s(10.0, 40.0));
+        h.push_at(base + Duration::from_secs(5), s(20.0, 50.0));
+        h.push_at(base + Duration::from_secs(10), s(30.0, 60.0));
+        let now = base + Duration::from_secs(10);
+        assert_eq!(
+            h.series_at(now, |s| s.cpu),
+            vec![(-10.0, 10.0), (-5.0, 20.0), (0.0, 30.0)]
+        );
+        assert_eq!(h.series_at(now, |s| s.ram).last(), Some(&(0.0, 60.0)));
+        assert_eq!(h.span(), 10.0);
+        assert_eq!(History::default().span(), 0.0);
+    }
+
+    #[test]
     fn the_default_pace_is_the_slow_one() {
         let p = Pace::default();
         assert!(!p.is_fast());
         assert_eq!(p.interval(), IDLE_INTERVAL);
         p.set_fast(true);
         assert_eq!(p.clone().interval(), BUSY_INTERVAL);
+        p.set_fast(false);
+        assert_eq!(p.interval(), IDLE_INTERVAL);
     }
 
     #[test]

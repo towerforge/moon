@@ -209,7 +209,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parsea() {
+    fn parses() {
         // the model is not typed in: `/model` opens the list, and what may
         // come after it is not a model to pick
         assert_eq!(parse("/model"), Ok(Command::Model));
@@ -221,15 +221,15 @@ mod tests {
         );
         assert_eq!(parse("/q"), Ok(Command::Quit));
         assert_eq!(
-            parse("/system  sé breve "),
-            Ok(Command::System(Some("sé breve".into())))
+            parse("/system  be brief "),
+            Ok(Command::System(Some("be brief".into())))
         );
-        assert!(parse("/nada").is_err());
+        assert!(parse("/nope").is_err());
         assert!(parse("/").is_err());
     }
 
     #[test]
-    fn completa() {
+    fn completes() {
         assert_eq!(complete("mod"), vec!["model"]);
         assert_eq!(complete("se"), vec!["sessions"]);
         assert_eq!(parse("/resume"), Ok(Command::Sessions));

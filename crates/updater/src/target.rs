@@ -78,7 +78,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn los_nombres_son_los_de_las_releases() {
+    fn the_names_are_the_ones_the_releases_use() {
         assert_eq!(
             Target::new("macos", "aarch64", false).asset_name(),
             "moon-macos-aarch64.tar.gz"
@@ -103,7 +103,7 @@ mod tests {
     }
 
     #[test]
-    fn el_binario_lleva_exe_en_windows() {
+    fn the_binary_carries_exe_on_windows() {
         assert_eq!(Target::new("linux", "x86_64", false).binary_name(), "moon");
         assert_eq!(
             Target::new("windows", "x86_64", false).binary_name(),
@@ -112,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn esta_plataforma_esta_soportada() {
+    fn this_platform_is_supported() {
         let t = Target::current().expect("moon builds for this platform");
         assert!(t.asset_name().starts_with("moon-"));
     }

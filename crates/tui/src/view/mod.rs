@@ -127,6 +127,8 @@ fn render_suggest(app: &App, frame: &mut Frame, area: Rect) {
         return;
     };
     let t = &app.theme;
+    // what is already typed, to set it apart in every name
+    let typed = app.typing_command().unwrap_or_default().chars().count();
     let rows = area.height as usize - 1;
     let start = sel.saturating_sub(rows - 1);
     let name_w = command_column_width();
@@ -144,10 +146,13 @@ fn render_suggest(app: &App, frame: &mut Frame, area: Rect) {
             .take(rows)
             .map(|(i, s)| {
                 let selected = i == sel;
+                // the tail of the name is what completing would add: under
+                // the cursor it goes in moon-soft, on the other rows it is
+                // plain text, like the help
                 let (name_st, help_st) = if selected {
-                    (t.accent_bold(), t.text())
+                    (t.soft(), t.text())
                 } else {
-                    (t.accent(), t.muted())
+                    (t.muted(), t.muted())
                 };
                 let head_w = width(s.name)
                     + 1
@@ -157,10 +162,18 @@ fn render_suggest(app: &App, frame: &mut Frame, area: Rect) {
                         width(s.args) + 1
                     };
                 let pad = name_w.saturating_sub(head_w);
+                // `/` plus the characters already typed, in moon and bold
+                // as in the box: the rest is what completing would add
+                let cut = s
+                    .name
+                    .char_indices()
+                    .nth(typed)
+                    .map_or(s.name.len(), |(i, _)| i);
+                let (head, tail) = s.name.split_at(cut);
                 let mut spans = vec![
                     Span::styled(if selected { " ❯ " } else { "   " }, t.accent()),
-                    Span::styled("/", name_st),
-                    Span::styled(s.name, name_st),
+                    Span::styled(format!("/{head}"), t.accent_bold()),
+                    Span::styled(tail, name_st),
                 ];
                 if !s.args.is_empty() {
                     spans.push(Span::styled(format!(" {}", s.args), t.soft()));

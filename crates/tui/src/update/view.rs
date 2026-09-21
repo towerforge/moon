@@ -364,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn la_caja_dice_de_que_version_a_cual_y_que_trae() {
+    fn the_box_says_from_which_version_to_which_and_what_it_brings() {
         let out = dump(Phase::Confirm, 80);
         assert!(out.contains("moon update"), "{out}");
         assert!(out.contains("0.1.1  →  0.1.2"), "{out}");
@@ -378,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn la_barra_avanza_con_la_descarga() {
+    fn the_bar_advances_with_the_download() {
         let out = dump(
             Phase::Working(Step::Download {
                 got: 2_100_000,
@@ -392,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn al_dia_no_ensena_ni_barra_ni_teclas() {
+    fn up_to_date_shows_neither_bar_nor_keys() {
         let mut s = state(Phase::UpToDate);
         s.release = None;
         let out = plain(&s, &Theme::moon(), 80).join("\n");
@@ -403,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn en_terminal_estrecha_cabe_sin_desbordar() {
+    fn on_a_narrow_terminal_it_fits_without_overflowing() {
         for width in [40, 60, 66, 80, 120] {
             for row in plain(&state(Phase::Confirm), &Theme::moon(), width) {
                 assert!(
@@ -420,14 +420,14 @@ mod tests {
     }
 
     #[test]
-    fn el_fallo_se_lee_y_apunta_al_instalador() {
+    fn the_failure_reads_and_points_at_the_installer() {
         let out = dump(Phase::Failed("checksum mismatch".into()), 80);
         assert!(out.contains("checksum mismatch"), "{out}");
         assert!(out.contains("install.sh"), "{out}");
     }
 
     #[test]
-    fn los_tamanos_se_leen_en_mb() {
+    fn sizes_read_in_mb() {
         assert_eq!(fmt_mb(4_200_000), "4.2 MB");
         assert_eq!(fmt_mb(0), "0.0 MB");
         assert_eq!(fmt_mb(2_500_000_000), "2.5 GB");

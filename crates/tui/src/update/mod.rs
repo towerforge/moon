@@ -514,7 +514,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn una_release_vieja_no_es_noticia() {
+    async fn an_old_release_is_not_news() {
         let mut h = Harness::new();
         let mut s = state();
         let done = h.apply(
@@ -528,7 +528,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn una_release_nueva_espera_el_visto_bueno() {
+    async fn a_new_release_waits_for_the_go_ahead() {
         let dir = tempfile::tempdir().unwrap();
         let mut h = Harness::new();
         let mut s = state_at(dir.path().join("moon"));
@@ -544,7 +544,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn con_check_lo_dice_y_no_toca_nada() {
+    async fn with_check_it_reports_and_touches_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let mut h = Harness::new();
         let mut s = state_at(dir.path().join("moon"));
@@ -559,7 +559,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sobre_un_build_local_se_para_antes_de_descargar() {
+    async fn on_a_local_build_it_stops_before_downloading() {
         let mut h = Harness::new();
         let mut s = state_at(PathBuf::from("/home/j/moon/target/release/moon"));
         let done = h.apply(
@@ -573,7 +573,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn el_final_dice_si_se_pudo_verificar() {
+    async fn the_end_says_whether_it_could_verify() {
         let mut h = Harness::new();
         let mut s = state();
         s.release = Some(release("0.2.0"));
@@ -585,7 +585,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn un_fallo_de_github_se_ensena_y_acaba() {
+    async fn a_github_failure_is_shown_and_ends_there() {
         let mut h = Harness::new();
         let mut s = state();
         let done = h.apply(
@@ -598,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn to_permite_bajar_de_version_pero_no_reinstalar_la_misma() {
+    fn to_allows_a_downgrade_but_not_the_same_version_again() {
         let mut o = opts(false, false);
         o.to = Some("0.1.0".parse().unwrap());
         assert!(o.worth_installing(&"0.1.0".parse().unwrap()));
@@ -611,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn la_version_que_se_instalaria_solo_sale_cuando_toca() {
+    fn the_version_that_would_install_shows_only_when_due() {
         let mut s = state();
         assert_eq!(s.next_version(), None);
         s.release = Some(Release {
@@ -634,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn no_se_pisa_un_cargo_install_ni_un_build_sin_force() {
+    fn without_force_neither_a_cargo_install_nor_a_build_is_overwritten() {
         let cargo = PathBuf::from("/home/j/.cargo/bin/moon");
         assert!(allowed(&cargo, false).is_err());
         let dev = PathBuf::from("/home/j/moon/target/release/moon");
@@ -646,13 +646,13 @@ mod tests {
     }
 
     #[test]
-    fn el_directorio_que_no_existe_no_se_puede_escribir() {
+    fn a_directory_that_does_not_exist_is_not_writable() {
         let dest = PathBuf::from("/no/such/dir/moon");
         assert!(allowed(&dest, true).is_err());
     }
 
     #[test]
-    fn el_hogar_se_acorta_en_la_ruta() {
+    fn home_is_shortened_in_the_path() {
         let mut s = state();
         let home = std::env::var("HOME").unwrap_or_default();
         if home.is_empty() {

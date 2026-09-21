@@ -15,7 +15,8 @@ pub fn extract(text: &str) -> Vec<String> {
                 rest = stripped;
             }
         }
-        if rest.is_empty() || rest == "!" {
+        // `@@` is not a path: it is the hunk header of a diff
+        if rest.is_empty() || rest == "!" || rest.starts_with('@') {
             continue;
         }
         if !out.iter().any(|o| o == rest) {
@@ -30,7 +31,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extrae_menciones() {
+    fn extracts_mentions() {
         assert_eq!(
             extract("explica @src/a.rs y @b.rs:1-3, gracias. Mira @src/a.rs otra vez"),
             vec!["src/a.rs", "b.rs:1-3"]
@@ -38,5 +39,9 @@ mod tests {
         assert_eq!(extract("escribe a a@b.com y @ solo"), Vec::<String>::new());
         assert_eq!(extract("usa @!.env."), vec!["!.env"]);
         assert_eq!(extract("(ver @docs/x.md)"), vec!["docs/x.md"]);
+        assert_eq!(
+            extract("@@ -127,6 +127,8 @@ fn render()"),
+            Vec::<String>::new()
+        );
     }
 }

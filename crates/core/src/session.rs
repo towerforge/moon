@@ -277,38 +277,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ciclo_completo() {
+    fn full_cycle() {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionStore::new(dir.path().join("sessions"));
         assert!(store.list().unwrap().is_empty());
 
-        let meta = store.create("hola", Some("ollama/x".into()), None).unwrap();
-        store.append(&meta, &Message::user("hola")).unwrap();
-        let mut a = Message::assistant("qué tal");
+        let meta = store
+            .create("hello", Some("ollama/x".into()), None)
+            .unwrap();
+        store.append(&meta, &Message::user("hello")).unwrap();
+        let mut a = Message::assistant("how are you");
         a.model = Some("ollama/x".into());
         store.append(&meta, &a).unwrap();
 
         let list = store.list().unwrap();
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].title, "hola");
+        assert_eq!(list[0].title, "hello");
 
         let s = store.load(&meta.id[..4]).unwrap();
         assert_eq!(s.messages.len(), 2);
         assert_eq!(s.messages[1].model.as_deref(), Some("ollama/x"));
 
         let mut renamed = s.meta.clone();
-        renamed.title = "otro".into();
+        renamed.title = "other".into();
         store.update_meta(&renamed).unwrap();
-        assert_eq!(store.latest().unwrap().unwrap().title, "otro");
+        assert_eq!(store.latest().unwrap().unwrap().title, "other");
 
         store.rewrite(&renamed, &s.messages[..1]).unwrap();
         assert_eq!(store.load(&meta.id).unwrap().messages.len(), 1);
 
         let md = export_markdown(&store.load(&meta.id).unwrap());
-        assert!(md.starts_with("# otro\n"));
-        assert!(md.contains("**❯** hola"));
+        assert!(md.starts_with("# other\n"));
+        assert!(md.contains("**❯** hello"));
 
-        assert_eq!(store.delete(&meta.id[..4]).unwrap().title, "otro");
+        assert_eq!(store.delete(&meta.id[..4]).unwrap().title, "other");
         assert!(store.list().unwrap().is_empty());
         assert!(matches!(
             store.delete(&meta.id),
@@ -317,11 +319,11 @@ mod tests {
     }
 
     #[test]
-    fn titulo() {
-        assert_eq!(title_from("  \n hola mundo\nmás"), "hola mundo");
+    fn title() {
+        assert_eq!(title_from("  \n first line\nmore"), "first line");
         assert_eq!(title_from(""), "untitled");
-        let largo = "a".repeat(80);
-        let t = title_from(&largo);
+        let long = "a".repeat(80);
+        let t = title_from(&long);
         assert_eq!(t.chars().count(), 61);
         assert!(t.ends_with('…'));
     }

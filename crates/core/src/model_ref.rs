@@ -15,7 +15,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn corta_solo_con_proveedor_conocido() {
+    fn splits_only_on_a_known_provider() {
         let known = |p: &str| p == "ollama";
         assert_eq!(split("ollama/qwen", known), (Some("ollama"), "qwen"));
         assert_eq!(

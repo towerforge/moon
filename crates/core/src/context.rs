@@ -327,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn lectura_rangos_y_limites() {
+    fn reads_ranges_and_limits() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "l1\nl2\nl3\nl4\n").unwrap();
         std::fs::create_dir(dir.path().join("d")).unwrap();
@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn bloque_y_system_prompt() {
+    fn block_and_system_prompt() {
         let a = Attachment {
             path: "x.rs".into(),
             content: "fn main() {}\n".into(),
@@ -390,7 +390,7 @@ mod tests {
         assert!(is_denied(Path::new("/x/id_rsa.pub")));
         assert!(is_denied(Path::new("server.key")));
         assert!(!is_denied(Path::new("keyboard.rs")));
-        assert!(!is_binary("hola\n".as_bytes()));
+        assert!(!is_binary("text\n".as_bytes()));
         assert!(is_binary(&[0x89, b'P', b'N', b'G', 0, 0]));
     }
 }

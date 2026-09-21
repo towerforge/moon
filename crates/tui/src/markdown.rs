@@ -496,34 +496,34 @@ mod tests {
     }
 
     #[test]
-    fn parrafos_titulos_listas() {
+    fn paragraphs_headings_lists() {
         let r = Renderer::new();
         let t = Theme::moon();
-        let md = "# Título\n\nUn párrafo con **negrita** y `código`.\n\n- uno\n- dos\n  - anidado\n\n1. primero\n2. segundo\n";
+        let md = "# Title\n\nA paragraph with **bold** and `code`.\n\n- one\n- two\n  - nested\n\n1. first\n2. second\n";
         let out = r.render(md, 40, &t);
         let tx = texts(&out);
-        assert_eq!(tx[0], "Título");
+        assert_eq!(tx[0], "Title");
         assert_eq!(out[0].spans[0].style.fg, Some(t.moon));
         assert_eq!(tx[1], "");
-        assert_eq!(tx[2], "Un párrafo con negrita y código.");
-        assert_eq!(tx[4], "• uno");
-        assert_eq!(tx[5], "• dos");
-        assert_eq!(tx[6], "  • anidado");
-        assert_eq!(tx[8], "1. primero");
-        assert_eq!(tx[9], "2. segundo");
+        assert_eq!(tx[2], "A paragraph with bold and code.");
+        assert_eq!(tx[4], "• one");
+        assert_eq!(tx[5], "• two");
+        assert_eq!(tx[6], "  • nested");
+        assert_eq!(tx[8], "1. first");
+        assert_eq!(tx[9], "2. second");
     }
 
     #[test]
-    fn bloque_de_codigo_con_fondo_y_ancho_completo() {
+    fn code_block_with_background_and_full_width() {
         let r = Renderer::new();
         let t = Theme::moon();
-        let md = "texto\n\n```rust\nfn main() {} // hola\n```\n";
+        let md = "text\n\n```rust\nfn main() {} // note\n```\n";
         let out = r.render(md, 30, &t);
         let tx = texts(&out);
-        assert_eq!(tx[0], "texto");
+        assert_eq!(tx[0], "text");
         assert_eq!(tx[2].trim_end(), " rust");
         assert_eq!(out[2].width(), 30);
-        assert_eq!(tx[3].trim_end(), " fn main() {} // hola");
+        assert_eq!(tx[3].trim_end(), " fn main() {} // note");
         assert_eq!(out[3].width(), 30);
         // the `fn` keyword goes in moon-soft and the comment in ink-muted
         let fg: Vec<_> = out[3]
@@ -536,7 +536,7 @@ mod tests {
             .any(|(c, f)| c.trim() == "fn" && *f == Some(t.moon_soft)));
         assert!(fg
             .iter()
-            .any(|(c, f)| c.contains("hola") && *f == Some(t.ink_muted)));
+            .any(|(c, f)| c.contains("note") && *f == Some(t.ink_muted)));
         assert!(out[3]
             .spans
             .iter()
@@ -544,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn fence_sin_cerrar_en_streaming() {
+    fn unclosed_fence_while_streaming() {
         let r = Renderer::new();
         let t = Theme::moon();
         let out = r.render("```py\nprint(1)", 20, &t);
@@ -554,15 +554,15 @@ mod tests {
     }
 
     #[test]
-    fn tabla_y_cita() {
+    fn table_and_quote() {
         let r = Renderer::new();
         let t = Theme::moon();
-        let md = "| a | b |\n|---|---|\n| 1 | 22 |\n\n> cita\n";
+        let md = "| a | b |\n|---|---|\n| 1 | 22 |\n\n> quote\n";
         let out = r.render(md, 40, &t);
         let tx = texts(&out);
         assert_eq!(tx[0], " a │ b  ");
         assert!(tx[1].starts_with("───┼"));
         assert_eq!(tx[2], " 1 │ 22 ");
-        assert_eq!(tx[4], "│ cita");
+        assert_eq!(tx[4], "│ quote");
     }
 }

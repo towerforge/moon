@@ -484,19 +484,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn seleccion_con_el_raton() {
+    fn mouse_selection() {
         let mut i = ChatInput::new();
-        i.insert_str("hola mundo");
-        // «mundo»: de la columna 5 a la 10, con el prompt de por medio
+        i.insert_str("some words");
+        // «words»: from column 5 to 10, with the prompt in between
         i.select_from(20, PROMPT_WIDTH as u16 + 5, 0);
         i.select_to(20, PROMPT_WIDTH as u16 + 10, 0);
         assert!(i.has_selection());
-        assert_eq!(i.selection_text(), "mundo");
-        // arrastrar hacia atrás da lo mismo
+        assert_eq!(i.selection_text(), "words");
+        // dragging backwards comes out the same
         i.select_from(20, PROMPT_WIDTH as u16 + 10, 0);
         i.select_to(20, PROMPT_WIDTH as u16 + 5, 0);
-        assert_eq!(i.selection_text(), "mundo");
-        // un clic sin arrastre no selecciona nada
+        assert_eq!(i.selection_text(), "words");
+        // a click with no drag selects nothing
         i.select_from(20, PROMPT_WIDTH as u16 + 2, 0);
         assert_eq!(i.selection_text(), "");
         i.clear_selection();
@@ -505,13 +505,13 @@ mod tests {
     }
 
     #[test]
-    fn la_seleccion_cruza_lineas() {
+    fn the_selection_crosses_lines() {
         let mut i = ChatInput::new();
-        i.set_text("una\ndos\ntres");
+        i.set_text("one\ntwo\nfour");
         i.select_from(20, PROMPT_WIDTH as u16 + 1, 0);
         i.select_to(20, PROMPT_WIDTH as u16 + 2, 2);
-        assert_eq!(i.selection_text(), "na\ndos\ntr");
-        // y lo que se ve seleccionado son esos caracteres, no otros
+        assert_eq!(i.selection_text(), "ne\ntwo\nfo");
+        // and what shows as selected is those characters and no others
         assert!(!i.is_selected(0, 0));
         assert!(i.is_selected(0, 1));
         assert!(i.is_selected(1, 0));
@@ -520,23 +520,23 @@ mod tests {
     }
 
     #[test]
-    fn edicion_basica() {
+    fn basic_editing() {
         let mut i = ChatInput::new();
-        i.insert_str("hola");
+        i.insert_str("text");
         i.newline();
-        i.insert_str("mundo");
-        assert_eq!(i.text(), "hola\nmundo");
+        i.insert_str("world");
+        assert_eq!(i.text(), "text\nworld");
         assert!(!i.on_first_line());
         i.backspace();
         i.backspace();
-        assert_eq!(i.text(), "hola\nmun");
+        assert_eq!(i.text(), "text\nwor");
         i.home();
         i.backspace();
-        assert_eq!(i.text(), "holamun");
+        assert_eq!(i.text(), "textwor");
         i.left();
         i.left();
         i.delete();
-        assert_eq!(i.text(), "hoamun");
+        assert_eq!(i.text(), "tetwor");
         i.set_text("a b  c");
         i.delete_word_back();
         assert_eq!(i.text(), "a b  ");
@@ -547,10 +547,10 @@ mod tests {
     }
 
     #[test]
-    fn pegado_y_altura() {
+    fn paste_and_height() {
         let mut i = ChatInput::new();
-        i.insert_str("uno\r\ndos\tx");
-        assert_eq!(i.text(), "uno\ndos  x");
+        i.insert_str("one\r\ntwo\tx");
+        assert_eq!(i.text(), "one\ntwo  x");
         assert_eq!(i.height(80), 2);
         i.set_text(&"a".repeat(20));
         // the line exactly fills two rows: the cursor moves down to a third
@@ -566,18 +566,18 @@ mod tests {
     }
 
     #[test]
-    fn el_cursor_va_pegado_al_texto() {
+    fn the_cursor_sits_right_on_the_text() {
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
         let mut i = ChatInput::new();
-        i.insert_str("hola");
+        i.insert_str("text");
         let area = Rect::new(0, 5, 40, 1);
         let mut buf = Buffer::empty(area);
         let (x, y) = i.render(area, &mut buf, &Theme::moon(), 0);
         assert_eq!((x, y), (PROMPT_WIDTH as u16 + 4, 5));
         assert_eq!(buf[(0, 5)].symbol(), "❯");
         assert_eq!(unicode_width::UnicodeWidthStr::width(PROMPT), PROMPT_WIDTH);
-        assert_eq!(buf[(2, 5)].symbol(), "h");
+        assert_eq!(buf[(2, 5)].symbol(), "t");
         // the usable width is also measured in columns: 40 - 2 = 38
         i.set_text(&"a".repeat(38));
         assert_eq!(i.height(40), 2);
@@ -586,10 +586,10 @@ mod tests {
     }
 
     #[test]
-    fn clic_mueve_el_cursor() {
+    fn a_click_moves_the_cursor() {
         let mut i = ChatInput::new();
-        i.set_text("hola mundo\nadiós");
-        // width 12 → 10 text columns: "hola mundo" fits exactly in one row
+        i.set_text("some words\nnaïve");
+        // width 12 → 10 text columns: "some words" fits exactly in one row
         i.click(12, PROMPT_WIDTH as u16 + 5, 0);
         assert_eq!((i.row, i.col), (0, 5));
         assert_eq!(i.visual(10).1, (5, 0));
@@ -634,7 +634,7 @@ mod tests {
         // with internal scroll: the box shows rows 2..4 and the click is offset
         let mut i = ChatInput::new();
         i.max_height = 2;
-        i.set_text("uno\ndos\ntres\ncuatro");
+        i.set_text("one\ntwo\nthree\nfour");
         let area = Rect::new(0, 0, 12, 2);
         let mut buf = Buffer::empty(area);
         i.render(area, &mut buf, &Theme::moon(), 0);
@@ -644,7 +644,7 @@ mod tests {
     }
 
     #[test]
-    fn el_comando_se_resalta_aunque_se_corte() {
+    fn the_command_is_highlighted_even_when_cut() {
         use ratatui::style::Modifier;
         let t = Theme::moon();
         let mut i = ChatInput::new();
@@ -671,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_con_anchos_dobles() {
+    fn cursor_with_double_widths() {
         let mut i = ChatInput::new();
         i.insert_str("日本");
         let (rows, cursor) = i.visual(10);

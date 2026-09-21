@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn el_asset_de_la_plataforma_y_el_que_falta() {
+    fn the_platform_asset_and_the_missing_one() {
         let r = release("");
         let mac = Target::new("macos", "aarch64", false);
         assert_eq!(r.asset_for(&mac).unwrap().size, 10);
@@ -393,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn las_notas_se_resumen_en_vinetas() {
+    fn the_notes_are_summarized_into_bullets() {
         let notes = "## What's Changed\n\
              * feat: model picker by @towerforge in https://github.com/x/pull/3\n\
              - fix: narrow terminals\n\
@@ -408,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn el_checksum_cuadra_o_no_se_instala() {
+    fn the_checksum_matches_or_nothing_installs() {
         let data = b"moon";
         let hash = format!("{:x}", Sha256::digest(data));
         let file = format!("{hash}  moon-macos-aarch64.tar.gz\nother  moon-linux-x86_64.tar.gz\n");
@@ -423,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn saca_el_binario_del_tar_gz() {
+    fn it_pulls_the_binary_out_of_the_tar_gz() {
         let mut tar = tar::Builder::new(Vec::new());
         let mut header = tar::Header::new_gnu();
         header.set_size(4);
@@ -443,7 +443,7 @@ mod tests {
     // it; it was checked against this same `zip` on macOS before being gated
     #[cfg(windows)]
     #[test]
-    fn saca_el_exe_del_zip() {
+    fn it_pulls_the_exe_out_of_the_zip() {
         let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         let opts: zip::write::FileOptions<'_, ()> =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn un_archivo_sin_binario_no_cuela() {
+    fn an_archive_with_no_binary_does_not_pass() {
         let mut tar = tar::Builder::new(Vec::new());
         let mut header = tar::Header::new_gnu();
         header.set_size(3);

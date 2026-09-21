@@ -5,7 +5,7 @@ use super::*;
 use ratatui::style::Modifier;
 
 #[tokio::test]
-async fn la_ventana_de_contexto_es_la_que_ollama_carga() {
+async fn the_context_window_is_the_one_ollama_loads() {
     let (mut app, _tx, _rx) = app();
     app.providers = vec![
         ProviderState {
@@ -57,7 +57,7 @@ async fn la_ventana_de_contexto_es_la_que_ollama_carga() {
 }
 
 #[tokio::test]
-async fn el_detalle_de_la_maquina_y_del_modelo_en_context() {
+async fn machine_and_model_detail_in_context() {
     let (mut app, tx, _rx) = app();
     app.current = Some(Current {
         provider: "p".into(),
@@ -109,7 +109,7 @@ async fn el_detalle_de_la_maquina_y_del_modelo_en_context() {
 }
 
 #[tokio::test]
-async fn adjuntos_contexto_y_presupuesto() {
+async fn attachments_context_and_budget() {
     let (mut app, tx, _rx) = app();
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
@@ -194,7 +194,7 @@ async fn adjuntos_contexto_y_presupuesto() {
 }
 
 #[tokio::test]
-async fn el_panel_de_ficheros_adjunta_y_desvincula() {
+async fn the_files_panel_attaches_and_detaches() {
     let (mut app, tx, _rx) = app();
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
@@ -205,7 +205,7 @@ async fn el_panel_de_ficheros_adjunta_y_desvincula() {
     // ctrl+f opens it; with nothing attached only the button to add is there
     app.update(ctrl('f'), &tx);
     let Some(Panel::Files(p)) = &app.panel else {
-        panic!("el panel de ficheros")
+        panic!("the files panel should be open")
     };
     assert_eq!(p.len(), 1);
     assert_eq!(p.title_info, "nothing attached");
@@ -213,7 +213,7 @@ async fn el_panel_de_ficheros_adjunta_y_desvincula() {
     // enter on `Add files…` walks into the tree, and a folder goes deeper
     app.update(key(KeyCode::Enter), &tx);
     let Some(Panel::Browse { picker, dir: at }) = &app.panel else {
-        panic!("el árbol")
+        panic!("the tree should be open")
     };
     assert_eq!(at.as_os_str(), "");
     assert_eq!(
@@ -222,7 +222,7 @@ async fn el_panel_de_ficheros_adjunta_y_desvincula() {
     );
     app.update(key(KeyCode::Enter), &tx);
     let Some(Panel::Browse { picker, dir: at }) = &app.panel else {
-        panic!("dentro de src")
+        panic!("it should be inside src")
     };
     assert_eq!(at.to_string_lossy(), "src");
     // `..` comes first, then what is inside
@@ -233,7 +233,7 @@ async fn el_panel_de_ficheros_adjunta_y_desvincula() {
     assert_eq!(app.live[0].path, "src/lib.rs");
     // it stays in the tree, and the row it attached now carries the check
     let Some(Panel::Browse { picker, .. }) = &app.panel else {
-        panic!("sigue en el árbol")
+        panic!("it should still be in the tree")
     };
     assert!(picker.current().is_some_and(|i| i.active));
     // enter again on the same row takes it out
@@ -245,7 +245,7 @@ async fn el_panel_de_ficheros_adjunta_y_desvincula() {
     // esc goes back to the panel, which now lists the file with its cost
     app.update(key(KeyCode::Esc), &tx);
     let Some(Panel::Files(p)) = &app.panel else {
-        panic!("de vuelta al panel")
+        panic!("it should be back in the panel")
     };
     assert!(p.title_info.starts_with("1 file · "));
     let labels: Vec<String> = p.visible().map(|(i, ..)| i.label.clone()).collect();
@@ -256,7 +256,7 @@ async fn el_panel_de_ficheros_adjunta_y_desvincula() {
     app.update(key(KeyCode::Enter), &tx);
     assert!(app.live.is_empty());
     let Some(Panel::Files(p)) = &app.panel else {
-        panic!("el panel sigue abierto")
+        panic!("the panel should still be open")
     };
     assert_eq!(p.len(), 1);
     assert!(app
@@ -273,7 +273,7 @@ async fn el_panel_de_ficheros_adjunta_y_desvincula() {
 }
 
 #[test]
-fn el_brillo_recorre_el_verbo_al_ritmo_de_la_estrella() {
+fn the_shimmer_sweeps_the_verb_in_step_with_the_star() {
     let (mut app, tx, _rx) = app();
     app.loading = true;
     // spans: star, space and one letter per span of "checking providers…"
@@ -293,9 +293,9 @@ fn el_brillo_recorre_el_verbo_al_ritmo_de_la_estrella() {
     let spans = app.activity_spans().unwrap();
     assert_eq!(
         spans[0].content, SPINNER[2],
-        "la estrella avanza con el mismo contador"
+        "the star moves on the same counter"
     );
-    assert_eq!(spans[3].style.fg, Some(app.theme.moon_soft), "cabeza");
+    assert_eq!(spans[3].style.fg, Some(app.theme.moon_soft), "head");
     assert_eq!(
         spans[2].style.fg,
         Some(app.theme.moon_soft),
@@ -323,7 +323,7 @@ fn el_brillo_recorre_el_verbo_al_ritmo_de_la_estrella() {
 }
 
 #[tokio::test]
-async fn cancelar_deja_el_cierre_con_cruz() {
+async fn cancelling_closes_the_turn_with_a_cross() {
     let (mut app, tx, _rx) = app();
     app.loading = false;
     app.current = Some(Current {
@@ -338,7 +338,7 @@ async fn cancelar_deja_el_cierre_con_cruz() {
             .collect()
     };
     // cancelled while thinking: no message, but with a closing line and no notice
-    app.push_item(Item::Message(Message::user("hola")));
+    app.push_item(Item::Message(Message::user("hello")));
     app.gen = Generation::Streaming {
         cancel: CancellationToken::new(),
         started: Instant::now(),
@@ -360,8 +360,8 @@ async fn cancelar_deja_el_cierre_con_cruz() {
         deltas: 0,
         sent: 30,
     };
-    app.update(Action::Stream(9, StreamEvent::Delta("hol".into())), &tx);
-    app.update(Action::Stream(9, StreamEvent::Delta("a".into())), &tx);
+    app.update(Action::Stream(9, StreamEvent::Delta("hel".into())), &tx);
+    app.update(Action::Stream(9, StreamEvent::Delta("lo".into())), &tx);
     app.cancel_generation();
     let s = summary(&app);
     assert!(
@@ -370,21 +370,23 @@ async fn cancelar_deja_el_cierre_con_cruz() {
     );
     assert!(s.ends_with(" tok/s)"), "{s}");
     assert!(app.notice.is_none());
-    assert!(matches!(app.items.last(), Some(Item::Message(m)) if m.partial && m.content == "hola"));
+    assert!(
+        matches!(app.items.last(), Some(Item::Message(m)) if m.partial && m.content == "hello")
+    );
     // the cross goes in `alert`
     let head = &app.activity_spans().unwrap()[0];
     assert_eq!(head.style.fg, Some(app.theme.alert));
 }
 
 #[test]
-fn la_estrella_ocupa_una_columna() {
+fn the_star_takes_one_column() {
     for f in SPINNER.into_iter().chain(["✓", "✗"]) {
         assert_eq!(unicode_width::UnicodeWidthStr::width(f), 1, "{f}");
     }
 }
 
 #[test]
-fn formatos() {
+fn formats() {
     assert_eq!(fmt_dur(Duration::from_secs(12)), "12s");
     assert_eq!(fmt_dur(Duration::from_secs(80)), "1m 20s");
     assert_eq!(fmt_dur(Duration::from_secs(3725)), "1h 2m");

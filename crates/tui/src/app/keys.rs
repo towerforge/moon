@@ -543,7 +543,7 @@ impl App {
 
     /// Command prefix being typed: the box holds a single line `/something`
     /// with no spaces and there is no panel.
-    pub(super) fn typing_command(&self) -> Option<String> {
+    pub fn typing_command(&self) -> Option<String> {
         if self.panel.is_some() {
             return None;
         }

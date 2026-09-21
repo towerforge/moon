@@ -96,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn por_defecto_bajo_home() {
+    fn by_default_under_home() {
         let p = Paths::resolve(Path::new("/home/j"), None, None, None);
         assert_eq!(
             p.config_file(),
@@ -113,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn respeta_xdg_e_ignora_vacias() {
+    fn honors_xdg_and_ignores_empty_ones() {
         let p = Paths::resolve(
             Path::new("/home/j"),
             Some("/etc/x".into()),

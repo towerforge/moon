@@ -297,7 +297,10 @@ impl App {
         right.push(model_line);
         right.push(cwd_line);
         right.extend(config_line);
-        with_logo(logo_rows(), right, LOGO_COLS)
+        // a blank row over the logo: flush against the top edge it felt cramped
+        let mut lines = vec![Line::from("")];
+        lines.extend(with_logo(logo_rows(), right, LOGO_COLS));
+        lines
     }
 
     /// Visible lines of the conversation for a given area. Updates the scroll

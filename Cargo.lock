@@ -1643,7 +1643,7 @@ dependencies = [
 
 [[package]]
 name = "moon-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1663,7 +1663,7 @@ dependencies = [
 
 [[package]]
 name = "moon-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1680,7 +1680,7 @@ dependencies = [
 
 [[package]]
 name = "moon-provider-ollama"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1699,7 +1699,7 @@ dependencies = [
 
 [[package]]
 name = "moon-provider-openai"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1718,7 +1718,7 @@ dependencies = [
 
 [[package]]
 name = "moon-tui"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1742,7 +1742,7 @@ dependencies = [
 
 [[package]]
 name = "moon-updater"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "flate2",

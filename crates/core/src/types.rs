@@ -242,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn reparto_entre_gpu_y_cpu() {
+    fn split_between_gpu_and_cpu() {
         // fully in the GPU: nothing on the CPU, and nothing gets drawn
         let m = loaded(1000, 1000);
         assert_eq!(m.cpu_percent(), 0);
@@ -259,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn la_caducidad_pasada_no_cuenta() {
+    fn a_past_expiry_does_not_count() {
         let mut m = loaded(10, 10);
         m.expires_at = Some(Utc::now() - chrono::Duration::seconds(30));
         assert!(m.expires_in().is_none());

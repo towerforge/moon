@@ -36,7 +36,7 @@ pub(super) fn type_text(app: &mut App, tx: &Tx, s: &str) {
 }
 
 #[test]
-fn el_muestreo_va_deprisa_mientras_el_modelo_trabaja() {
+fn sampling_runs_fast_while_the_model_works() {
     let (mut app, tx, _rx) = app();
     assert!(!app.sys_pace.is_fast());
     app.gen = Generation::Streaming {
@@ -54,7 +54,7 @@ fn el_muestreo_va_deprisa_mientras_el_modelo_trabaja() {
 }
 
 #[tokio::test]
-async fn comandos_basicos() {
+async fn basic_commands() {
     let (mut app, tx, _rx) = app();
     type_text(&mut app, &tx, "/help");
     app.update(key(KeyCode::Enter), &tx);
@@ -85,16 +85,16 @@ async fn comandos_basicos() {
 }
 
 #[tokio::test]
-async fn sin_modelo_no_envia_y_conserva_el_texto() {
+async fn with_no_model_it_does_not_send_and_keeps_the_text() {
     let (mut app, tx, _rx) = app();
-    type_text(&mut app, &tx, "hola");
+    type_text(&mut app, &tx, "hello");
     app.update(key(KeyCode::Enter), &tx);
-    assert_eq!(app.input.text(), "hola");
+    assert_eq!(app.input.text(), "hello");
     assert!(app.messages().next().is_none());
 }
 
 #[tokio::test]
-async fn streaming_undo_y_render() {
+async fn streaming_undo_and_render() {
     let (mut app, tx, _rx) = app();
     app.current = Some(Current {
         provider: "p".into(),
@@ -102,7 +102,7 @@ async fn streaming_undo_y_render() {
     });
     app.loading = false;
     app.gen_id = 7;
-    app.push_item(Item::Message(Message::user("hola")));
+    app.push_item(Item::Message(Message::user("hello")));
     app.gen = Generation::Streaming {
         cancel: CancellationToken::new(),
         started: Instant::now(),
@@ -111,12 +111,15 @@ async fn streaming_undo_y_render() {
         sent: 30,
     };
     app.update(
-        Action::Stream(7, StreamEvent::Delta("# Hola\n\nqué ".into())),
+        Action::Stream(7, StreamEvent::Delta("# Hello\n\nhow are ".into())),
         &tx,
     );
-    app.update(Action::Stream(7, StreamEvent::Delta("tal".into())), &tx);
-    app.update(Action::Stream(1, StreamEvent::Delta("viejo".into())), &tx); // stale id: ignored
-    assert_eq!(app.messages().last().unwrap().content, "# Hola\n\nqué tal");
+    app.update(Action::Stream(7, StreamEvent::Delta("you".into())), &tx);
+    app.update(Action::Stream(1, StreamEvent::Delta("stale".into())), &tx); // stale id: ignored
+    assert_eq!(
+        app.messages().last().unwrap().content,
+        "# Hello\n\nhow are you"
+    );
     let streaming: String = app
         .activity_spans()
         .unwrap()
@@ -193,19 +196,19 @@ async fn streaming_undo_y_render() {
 
     let lines = app.visible_lines(60, 40);
     let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-    assert!(text[0].contains("moon"));
-    assert!(text.iter().any(|l| l == "▌ hola"));
-    assert!(text.iter().any(|l| l == "Hola"));
-    assert!(text.iter().any(|l| l == "qué tal"));
+    assert!(text[1].contains("moon"));
+    assert!(text.iter().any(|l| l == "▌ hello"));
+    assert!(text.iter().any(|l| l == "Hello"));
+    assert!(text.iter().any(|l| l == "how are you"));
     // the request opens the turn with a full-width divider in night-line
     // and carries the moon bar in front of each line
-    let at = text.iter().position(|l| l == "▌ hola").unwrap();
+    let at = text.iter().position(|l| l == "▌ hello").unwrap();
     assert_eq!(lines[at].spans[0].style.fg, Some(app.theme.moon));
     assert_eq!(text[at - 1], "─".repeat(60));
     assert_eq!(lines[at - 1].spans[0].style.fg, Some(app.theme.night_line));
     assert_eq!(text[at - 2], "");
     // the reply has no divider
-    let at = text.iter().position(|l| l == "Hola").unwrap();
+    let at = text.iter().position(|l| l == "Hello").unwrap();
     assert!(!text[at - 1].contains('─'));
     assert_eq!(app.total_lines, text.len());
 
@@ -215,10 +218,10 @@ async fn streaming_undo_y_render() {
 }
 
 #[tokio::test]
-async fn scroll_e_historial() {
+async fn scroll_and_history() {
     let (mut app, tx, _rx) = app();
     for i in 0..30 {
-        app.push_item(Item::Info(format!("línea {i}")));
+        app.push_item(Item::Info(format!("line {i}")));
     }
     let _ = app.visible_lines(60, 10);
     assert!(app.follow);
@@ -237,8 +240,9 @@ async fn scroll_e_historial() {
 
     type_text(&mut app, &tx, "/clear");
     app.update(key(KeyCode::Enter), &tx);
-    // medium moon (4 rows); the default-configuration notice goes on the fourth
-    assert_eq!(app.visible_lines(60, 10).len(), 4);
+    // blank row + medium moon (4 rows); the default-configuration notice goes
+    // on the fourth
+    assert_eq!(app.visible_lines(60, 10).len(), 5);
     app.update(key(KeyCode::Up), &tx);
     assert_eq!(app.input.text(), "/clear");
     app.update(key(KeyCode::Down), &tx);
@@ -246,7 +250,7 @@ async fn scroll_e_historial() {
 }
 
 #[tokio::test]
-async fn sugerencias_de_comando() {
+async fn command_suggestions() {
     let (mut app, tx, _rx) = app();
     assert!(app.suggestions().is_none());
     type_text(&mut app, &tx, "/");
@@ -318,12 +322,12 @@ async fn sugerencias_de_comando() {
     assert!(app.suggestions().is_none());
     assert_eq!(app.command_span(), 0);
     app.update(key(KeyCode::Esc), &tx);
-    type_text(&mut app, &tx, "hola /help");
+    type_text(&mut app, &tx, "text /help");
     assert_eq!(app.command_span(), 0);
 }
 
 #[tokio::test]
-async fn selector_agrupado_y_recientes() {
+async fn grouped_picker_and_recents() {
     let (mut app, tx, _rx) = app();
     let dir = tempfile::tempdir().unwrap();
     app.recent_file = Some(dir.path().join("state").join(RECENT_MODELS_FILE));
@@ -384,11 +388,11 @@ async fn selector_agrupado_y_recientes() {
     assert_eq!(p.groups[0].info, "1 model");
     let first = p.rows();
     let crate::picker::Row::Item(i, selected, _) = &first[1] else {
-        panic!("tras la cabecera va el reciente");
+        panic!("the recent one goes right after the header");
     };
     assert!(*selected && i.active && i.detail.starts_with("ollama"));
     // a recent that no longer exists is not shown, and the saved list is trimmed
-    app.recent.insert(0, "ollama/borrado".into());
+    app.recent.insert(0, "ollama/deleted".into());
     assert_eq!(app.model_picker("").groups[0].info, "1 model");
     for i in 0..10 {
         app.set_model("ollama".into(), format!("m{i}"), &tx);
@@ -420,7 +424,7 @@ async fn selector_agrupado_y_recientes() {
 }
 
 #[tokio::test]
-async fn los_numeros_van_directos() {
+async fn the_numbers_go_straight_through() {
     use moon_core::{Health, ModelInfo};
     let (mut app, tx, _rx) = app();
     app.providers = vec![ProviderState {
@@ -447,7 +451,7 @@ async fn los_numeros_van_directos() {
     open(&mut app);
     type_text(&mut app, &tx, "qwen2.5");
     let Some(Panel::Models(p)) = &app.panel else {
-        panic!("el panel sigue abierto")
+        panic!("the panel should still be open")
     };
     assert_eq!(p.query, "qwen2.5");
     assert_eq!(p.len(), 1);
@@ -464,7 +468,7 @@ async fn los_numeros_van_directos() {
     open(&mut app);
     app.update(key(KeyCode::Char('9')), &tx);
     let Some(Panel::Models(p)) = &app.panel else {
-        panic!("el panel sigue abierto")
+        panic!("the panel should still be open")
     };
     assert!(p.query.is_empty());
     // with three models there is no `Recent` to repeat them: `1` is the first
@@ -507,25 +511,25 @@ async fn los_numeros_van_directos() {
 }
 
 #[tokio::test]
-async fn selector_de_sesiones_por_orden_alfabetico() {
+async fn session_picker_in_alphabetical_order() {
     use moon_core::session::SessionStore;
     let (mut app, tx, _rx) = app();
     let dir = tempfile::tempdir().unwrap();
     let store = SessionStore::new(dir.path());
-    let zeta = store
-        .create("zeta final", Some("ollama/m".into()), None)
+    let zulu = store
+        .create("zulu last", Some("ollama/m".into()), None)
         .unwrap();
-    let alfa = store.create("alfa primera", None, None).unwrap();
-    let media = store.create("Media, con mayúscula", None, None).unwrap();
+    let alpha = store.create("alpha first", None, None).unwrap();
+    let middle = store.create("Middle, capitalized", None, None).unwrap();
     app.store = Some(store);
     app.recent_sessions_file = Some(dir.path().join("state").join(RECENT_SESSIONS_FILE));
-    app.session = Some(zeta.clone());
+    app.session = Some(zulu.clone());
     app.update(
         Action::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
         &tx,
     );
     let Some(Panel::Sessions(p)) = &app.panel else {
-        panic!("ctrl+s abre el selector de sesiones");
+        panic!("ctrl+s should open the session picker");
     };
     assert_eq!(p.title_info, "3 sessions");
     // with nothing opened yet there is a single section, in alphabetical
@@ -539,38 +543,38 @@ async fn selector_de_sesiones_por_orden_alfabetico() {
     let labels: Vec<&str> = p.visible().map(|(i, _, _)| i.label.as_str()).collect();
     assert_eq!(
         labels,
-        vec!["alfa primera", "Media, con mayúscula", "zeta final"]
+        vec!["alpha first", "Middle, capitalized", "zulu last"]
     );
     // no dates anywhere: the detail is the model, or nothing
     let cur = p.current().unwrap();
-    assert!(cur.active && cur.label == "zeta final");
+    assert!(cur.active && cur.label == "zulu last");
     assert_eq!(cur.detail, "ollama/m");
     assert!(p.visible().all(|(i, _, _)| !i.detail.contains(':')));
 
     // opening one is remembered, but with three sessions `Recent` would only
     // repeat what is already in view
-    app.load_session(&alfa.id, &tx);
-    app.load_session(&media.id, &tx);
+    app.load_session(&alpha.id, &tx);
+    app.load_session(&middle.id, &tx);
     app.open_sessions_picker();
     let Some(Panel::Sessions(p)) = &app.panel else {
-        panic!("el selector sigue abierto");
+        panic!("the picker should still be open");
     };
     assert!(p.groups.iter().all(|g| g.title != "Recent"));
     // and the order is remembered anyway, run to run
     assert_eq!(
         load_recent(app.recent_sessions_file.as_deref()),
-        vec![media.id.clone(), alfa.id.clone()]
+        vec![middle.id.clone(), alpha.id.clone()]
     );
 
     // from ten sessions on the list no longer fits at a glance and the
     // section earns its place, with the last one opened on top
     let store = app.store.as_ref().unwrap();
     for i in 0..7 {
-        store.create(&format!("relleno {i}"), None, None).unwrap();
+        store.create(&format!("filler {i}"), None, None).unwrap();
     }
     app.open_sessions_picker();
     let Some(Panel::Sessions(p)) = &app.panel else {
-        panic!("el selector sigue abierto");
+        panic!("the picker should still be open");
     };
     let groups: Vec<(&str, &str)> = p
         .groups
@@ -588,14 +592,14 @@ async fn selector_de_sesiones_por_orden_alfabetico() {
         .collect();
     assert_eq!(
         labels,
-        vec!["Media, con mayúscula", "alfa primera", "alfa primera"]
+        vec!["Middle, capitalized", "alpha first", "alpha first"]
     );
     // rows: header, 2, blank, header, 10
     assert_eq!(p.rows().len(), 15);
 }
 
 #[tokio::test]
-async fn ctrl_d_y_ctrl_r_no_cierran_los_demas_paneles() {
+async fn ctrl_d_and_ctrl_r_do_not_close_the_other_panels() {
     use moon_core::ModelInfo;
     let (mut app, tx, _rx) = app();
     app.models = vec![
@@ -614,13 +618,13 @@ async fn ctrl_d_y_ctrl_r_no_cierran_los_demas_paneles() {
 }
 
 #[tokio::test]
-async fn borrar_y_renombrar_desde_el_selector() {
+async fn delete_and_rename_from_the_picker() {
     use moon_core::session::SessionStore;
     let (mut app, tx, _rx) = app();
     let dir = tempfile::tempdir().unwrap();
     let store = SessionStore::new(dir.path());
-    let open = store.create("abierta", None, None).unwrap();
-    let old = store.create("vieja", None, None).unwrap();
+    let open = store.create("active", None, None).unwrap();
+    let old = store.create("old", None, None).unwrap();
     app.store = Some(store);
     app.session = Some(open.clone());
     let list = |app: &App| app.store.as_ref().unwrap().list().unwrap();
@@ -637,7 +641,7 @@ async fn borrar_y_renombrar_desde_el_selector() {
     };
     assert!(*is_open);
     app.update(key(KeyCode::Esc), &tx);
-    // on «vieja», ctrl+d opens the dialog with «Delete» highlighted; esc goes back
+    // on «old», ctrl+d opens the dialog with «Delete» highlighted; esc goes back
     app.update(key(KeyCode::Down), &tx);
     app.update(ctrl('d'), &tx);
     let Some(Panel::SessionAction { action, .. }) = &app.panel else {
@@ -647,7 +651,7 @@ async fn borrar_y_renombrar_desde_el_selector() {
         *action,
         SessionAction::Delete {
             id: old.id.clone(),
-            title: "vieja".into(),
+            title: "old".into(),
             choice: Choice::Delete,
             open: false,
         }
@@ -670,9 +674,9 @@ async fn borrar_y_renombrar_desde_el_selector() {
     assert!(app
         .notice
         .as_ref()
-        .is_some_and(|(n, _)| n.contains("session deleted: vieja")));
+        .is_some_and(|(n, _)| n.contains("session deleted: old")));
     let Some(Panel::Sessions(p)) = &app.panel else {
-        panic!("el selector sigue abierto");
+        panic!("the picker should still be open");
     };
     assert_eq!((p.len(), p.title_info.as_str()), (1, "1 session"));
 
@@ -686,23 +690,23 @@ async fn borrar_y_renombrar_desde_el_selector() {
     else {
         panic!("the rename dialog should be open");
     };
-    assert_eq!(input, "abierta");
+    assert_eq!(input, "active");
     assert!(app.panel_keys().contains(&("enter", "save")));
-    type_text(&mut app, &tx, " y renombrada");
+    type_text(&mut app, &tx, " and renamed");
     app.update(key(KeyCode::Enter), &tx);
-    assert_eq!(list(&app)[0].title, "abierta y renombrada");
-    assert_eq!(app.session.as_ref().unwrap().title, "abierta y renombrada");
+    assert_eq!(list(&app)[0].title, "active and renamed");
+    assert_eq!(app.session.as_ref().unwrap().title, "active and renamed");
     let Some(Panel::Sessions(p)) = &app.panel else {
-        panic!("el selector sigue abierto");
+        panic!("the picker should still be open");
     };
-    assert_eq!(p.current().unwrap().label, "abierta y renombrada");
+    assert_eq!(p.current().unwrap().label, "active and renamed");
     // empty does not save; esc cancels without touching anything
     app.update(ctrl('r'), &tx);
     app.update(ctrl('u'), &tx);
     app.update(key(KeyCode::Enter), &tx);
     assert!(matches!(app.panel, Some(Panel::SessionAction { .. })));
     app.update(key(KeyCode::Esc), &tx);
-    assert_eq!(list(&app)[0].title, "abierta y renombrada");
+    assert_eq!(list(&app)[0].title, "active and renamed");
     assert!(matches!(app.panel, Some(Panel::Sessions(_))));
 
     // and the one you are in can be deleted too: the file goes and what is on
@@ -718,7 +722,7 @@ async fn borrar_y_renombrar_desde_el_selector() {
 }
 
 #[tokio::test]
-async fn scroll_de_la_ayuda() {
+async fn help_scroll() {
     let (mut app, tx, _rx) = app();
     app.panel = Some(Panel::Help(HelpState {
         tab: HelpTab::Commands,
@@ -760,18 +764,18 @@ async fn scroll_de_la_ayuda() {
 }
 
 #[tokio::test]
-async fn seleccion_con_el_raton_en_la_caja() {
+async fn mouse_selection_in_the_box() {
     let (mut app, tx, _rx) = app();
     app.loading = false;
-    type_text(&mut app, &tx, "hola mundo");
+    type_text(&mut app, &tx, "some words");
     let area = ratatui::layout::Rect::new(0, 10, 40, 1);
     app.input_area = Some(area);
     let px = crate::input::PROMPT_WIDTH as u16;
-    // arrastrar sobre «mundo» y soltar lo deja seleccionado y copiado
+    // dragging over «words» and releasing leaves it selected and copied
     app.update(Action::MouseDown(px + 5, 10), &tx);
     app.update(Action::MouseDrag(px + 10, 10), &tx);
     app.update(Action::MouseUp(px + 10, 10), &tx);
-    assert_eq!(app.input.selection_text(), "mundo");
+    assert_eq!(app.input.selection_text(), "words");
     assert!(app.input.has_selection());
     assert!(
         app.notice
@@ -780,39 +784,40 @@ async fn seleccion_con_el_raton_en_la_caja() {
         "{:?}",
         app.notice
     );
-    // el texto no se toca: seleccionar no edita
-    assert_eq!(app.input.text(), "hola mundo");
-    // la siguiente tecla se la lleva por delante
+    // the text is untouched: selecting does not edit
+    assert_eq!(app.input.text(), "some words");
+    // the next key sweeps it away
     app.update(key(KeyCode::Esc), &tx);
     assert!(!app.input.has_selection());
-    assert_eq!(app.input.text(), "hola mundo");
-    // y un clic suelto no selecciona nada
+    assert_eq!(app.input.text(), "some words");
+    // and a lone click selects nothing
     app.update(Action::MouseDown(px + 2, 10), &tx);
     app.update(Action::MouseUp(px + 2, 10), &tx);
     assert!(!app.input.has_selection());
 }
 
 #[tokio::test]
-async fn seleccion_con_el_raton() {
+async fn mouse_selection() {
     let (mut app, tx, _rx) = app();
     app.loading = false;
     type_text(&mut app, &tx, "/new"); // with no providers, App::new leaves an error in the conversation
     app.update(key(KeyCode::Enter), &tx);
-    app.push_item(Item::Info("uno dos tres".into()));
-    app.push_item(Item::Info("cuatro cinco".into()));
+    app.push_item(Item::Info("one two four".into()));
+    app.push_item(Item::Info("second entry".into()));
     let conv = ratatui::layout::Rect::new(0, 0, 40, 12);
     app.conv_area = Some(conv);
     let _ = app.visible_lines(40, 12);
-    // welcome block (4 rows) + blank + "uno dos tres" (row 5) + blank + "cuatro cinco" (row 7)
-    app.update(Action::MouseDown(4, 5), &tx);
-    app.update(Action::MouseDrag(5, 7), &tx);
-    assert_eq!(app.selection_text(), "dos tres\n\ncuatro");
+    // blank + welcome block (4 rows) + blank + "one two four" (row 6) + blank
+    // + "second entry" (row 8)
+    app.update(Action::MouseDown(4, 6), &tx);
+    app.update(Action::MouseDrag(5, 8), &tx);
+    assert_eq!(app.selection_text(), "two four\n\nsecond");
     // a click without dragging leaves no selection
-    app.update(Action::MouseDown(3, 5), &tx);
-    app.update(Action::MouseUp(3, 5), &tx);
+    app.update(Action::MouseDown(3, 6), &tx);
+    app.update(Action::MouseUp(3, 6), &tx);
     assert!(app.selection.is_none());
     // a click on the input box moves the cursor and does not select
-    type_text(&mut app, &tx, "hola mundo");
+    type_text(&mut app, &tx, "some words");
     app.input_area = Some(ratatui::layout::Rect::new(0, 14, 40, 1));
     app.update(
         Action::MouseDown(crate::input::PROMPT_WIDTH as u16 + 4, 14),
@@ -824,7 +829,7 @@ async fn seleccion_con_el_raton() {
     );
     assert!(app.selection.is_none());
     app.update(key(KeyCode::Char('X')), &tx);
-    assert_eq!(app.input.text(), "holaX mundo");
+    assert_eq!(app.input.text(), "someX words");
     // with a panel open the click does not reach the box
     app.panel = Some(Panel::Help(HelpState::default()));
     app.update(
@@ -833,9 +838,9 @@ async fn seleccion_con_el_raton() {
     );
     app.panel = None;
     app.update(key(KeyCode::Char('Y')), &tx);
-    assert_eq!(app.input.text(), "holaXY mundo");
+    assert_eq!(app.input.text(), "someXY words");
     assert_eq!(slice_columns("a日本b", 1, 3), "日");
-    assert_eq!(slice_columns("hola", 2, usize::MAX), "la");
+    assert_eq!(slice_columns("text", 2, usize::MAX), "xt");
 }
 
 #[tokio::test]
@@ -850,18 +855,18 @@ async fn zz_look() {
     let store = SessionStore::new(dir.path());
     let mut ids = Vec::new();
     for t in [
-        "arranque del proyecto",
-        "borrado de sesiones",
-        "cache de markdown",
-        "dudas sobre tokio",
-        "errores de clippy",
-        "filtros del picker",
-        "gestion de temas",
-        "hilos de sysmon",
-        "instalador de windows",
+        "app bootstrap",
+        "bulk session delete",
+        "cache for markdown",
+        "doubts about tokio",
+        "errors from clippy",
+        "filters in the picker",
+        "grouping themes",
+        "handling sysmon threads",
+        "installer for windows",
         "javascript? no",
         "kernel panic",
-        "logs de tracing",
+        "logs from tracing",
     ] {
         ids.push(
             store
@@ -885,7 +890,7 @@ async fn zz_look() {
 }
 
 #[tokio::test]
-async fn el_aviso_de_version_nueva_sale_en_la_bienvenida() {
+async fn the_new_version_notice_shows_in_the_welcome() {
     let (mut app, tx, _rx) = app();
     let text = |app: &App| {
         app.welcome_lines()

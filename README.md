@@ -265,7 +265,13 @@ moon ask "explain the borrow checker"          # reply streams to stdout
 git diff | moon ask --system "review this"     # prompt from stdin
 moon ask --stats "…"                           # token counts and speed, on stderr
 moon ask "summarize @README.md"                # the same @path mentions as the TUI
+```
 
+The `@path` mentions are expanded in the prompt you type, not in what comes
+down a pipe: piped text is content, and a diff or a log is full of `@@` and
+`@Annotation` tokens that are not paths.
+
+```sh
 moon -m ollama/qwen2.5-coder:14b               # start with this model
 moon --config ./moon.toml                      # another configuration file
 moon models                                    # models of every provider

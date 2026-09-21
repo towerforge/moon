@@ -360,11 +360,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sse_troceado() {
+    async fn sse_cut_in_pieces() {
         let s = chunks(&[
-            "data: {\"choices\":[{\"delta\":{\"content\":\"Ho\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"cont",
-            "ent\":\"la\"}}]}\n\n",
-            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"pienso\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"He\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"cont",
+            "ent\":\"llo\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\n",
             "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\n",
             "data: [DONE]\n\n",
         ]);
@@ -372,20 +372,20 @@ mod tests {
             .map(|e| e.unwrap())
             .collect()
             .await;
-        assert_eq!(events[0], ChatEvent::Delta("Ho".into()));
-        assert_eq!(events[1], ChatEvent::Delta("la".into()));
-        assert_eq!(events[2], ChatEvent::Thinking("pienso".into()));
+        assert_eq!(events[0], ChatEvent::Delta("He".into()));
+        assert_eq!(events[1], ChatEvent::Delta("llo".into()));
+        assert_eq!(events[2], ChatEvent::Thinking("thinking".into()));
         match &events[3] {
             ChatEvent::Done(u) => {
                 assert_eq!(u.prompt_tokens, Some(5));
                 assert_eq!(u.completion_tokens, Some(2));
             }
-            other => panic!("esperaba Done, llegó {other:?}"),
+            other => panic!("expected Done, got {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn modelos_auth_y_bearer() {
+    async fn models_auth_and_bearer() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/v1/models"))
@@ -416,7 +416,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_por_http() {
+    async fn chat_over_http() {
         let server = MockServer::start().await;
         let body = "data: {\"choices\":[{\"delta\":{\"content\":\"hey\"}}]}\n\ndata: [DONE]\n\n";
         Mock::given(method("POST"))
@@ -427,7 +427,7 @@ mod tests {
         let p = OpenAiProvider::new("lm", &format!("{}/v1", server.uri()), None, None).unwrap();
         let req = ChatRequest {
             model: "m".into(),
-            messages: vec![Message::user("hola")],
+            messages: vec![Message::user("hello")],
             params: Default::default(),
         };
         let events: Vec<_> = p
@@ -442,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn cuerpo() {
+    fn body() {
         let req = ChatRequest {
             model: "m".into(),
             messages: vec![Message::system("s"), Message::user("u")],

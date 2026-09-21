@@ -153,7 +153,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn distingue_de_donde_viene_el_binario() {
+    fn it_tells_where_the_binary_came_from() {
         assert_eq!(
             classify(Path::new("/usr/local/bin/moon")),
             InstallKind::Release
@@ -182,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn el_reemplazo_deja_el_binario_nuevo_y_ejecutable() {
+    fn the_swap_leaves_the_new_binary_executable() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("moon");
         std::fs::write(&dest, b"old").unwrap();
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn instala_donde_todavia_no_hay_nada() {
+    fn it_installs_where_there_is_nothing_yet() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("moon");
         install_binary(b"new", &dest).unwrap();

@@ -166,8 +166,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn la_plantilla_es_valida() {
-        let cfg = Config::parse(TEMPLATE, Path::new("plantilla")).unwrap();
+    fn the_template_is_valid() {
+        let cfg = Config::parse(TEMPLATE, Path::new("template")).unwrap();
         assert!(cfg.general.mouse);
         assert!(cfg.general.save_sessions);
         // nothing reaches out to github unless it is asked for
@@ -179,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn extra_y_overrides() {
+    fn extra_and_overrides() {
         let text = r##"
 [general]
 system_prompt = "Answer briefly."
@@ -215,7 +215,7 @@ moon = "#ffffff"
     }
 
     #[test]
-    fn sin_proveedores_pone_ollama() {
+    fn without_providers_it_adds_ollama() {
         // a setting that no longer exists is ignored, not an error: an old
         // file keeps working
         let cfg = Config::parse(
@@ -228,8 +228,8 @@ moon = "#ffffff"
     }
 
     #[test]
-    fn fichero_inexistente_es_default() {
-        let (cfg, src) = Config::load_or_default(Path::new("/no/existe/config.toml")).unwrap();
+    fn a_missing_file_is_the_default() {
+        let (cfg, src) = Config::load_or_default(Path::new("/no/such/config.toml")).unwrap();
         assert_eq!(src, ConfigSource::Default);
         assert!(cfg.providers.contains_key("ollama"));
     }

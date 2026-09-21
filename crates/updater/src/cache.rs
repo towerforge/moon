@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn la_nota_va_y_vuelve() {
+    fn the_note_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         assert!(CheckCache::load(dir.path()).is_none());
         let c = CheckCache::new(&v("0.2.0"));
@@ -111,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn una_nota_de_ayer_ya_no_vale() {
+    fn a_note_from_yesterday_is_stale() {
         let c = CheckCache {
             checked_at: Utc::now() - chrono::Duration::hours(25),
             latest: "0.2.0".into(),
@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn una_nota_del_futuro_no_se_cree() {
+    fn a_note_from_the_future_is_not_believed() {
         let c = CheckCache {
             checked_at: Utc::now() + chrono::Duration::hours(2),
             latest: "0.2.0".into(),
@@ -130,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn una_nota_ilegible_es_como_no_tenerla() {
+    fn an_unreadable_note_counts_as_none() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(CheckCache::path(dir.path()), "{ nope").unwrap();
         assert!(CheckCache::load(dir.path()).is_none());

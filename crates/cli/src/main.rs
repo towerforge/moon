@@ -280,7 +280,8 @@ async fn ask(
     stats: bool,
 ) -> anyhow::Result<()> {
     let mut text = prompt.join(" ");
-    if text.trim().is_empty() {
+    let piped = text.trim().is_empty();
+    if piped {
         if std::io::stdin().is_terminal() {
             bail!("pass the prompt as an argument or on stdin");
         }
@@ -293,14 +294,18 @@ async fn ask(
         bail!("the prompt is empty");
     }
     let (provider, model) = pick_model(cfg, registry, model).await?;
-    // same context as the TUI: MOON.md and @path mentions
+    // same context as the TUI: MOON.md and @path mentions. Only in what was
+    // typed: what comes down a pipe is content, and a diff or a log is full
+    // of `@@` and `@Annotation` tokens that are not paths
     let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut attachments = Vec::new();
-    for raw in moon_tui::mentions::extract(&text) {
-        let spec = Spec::parse(&raw).map_err(|e| anyhow!("@{raw}: {e}"))?;
-        let a = context::read_attachment(&root, &spec, cfg.general.max_attachment_bytes)
-            .map_err(|e| anyhow!("@{raw}: {e}"))?;
-        attachments.push(a);
+    if !piped {
+        for raw in moon_tui::mentions::extract(&text) {
+            let spec = Spec::parse(&raw).map_err(|e| anyhow!("@{raw}: {e}"))?;
+            let a = context::read_attachment(&root, &spec, cfg.general.max_attachment_bytes)
+                .map_err(|e| anyhow!("@{raw}: {e}"))?;
+            attachments.push(a);
+        }
     }
     let context_file = context::load_context_file(&root, &cfg.general.context_file)?;
     let base = system.or_else(|| cfg.general.system_prompt.clone());

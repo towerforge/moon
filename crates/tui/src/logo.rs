@@ -63,7 +63,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejilla_verificada_contra_el_svg() {
+    fn grid_checked_against_the_svg() {
         let celdas: usize = LOGO_GRID_FULL
             .iter()
             .map(|r| r.bytes().filter(|b| *b == b'#').count())
@@ -72,7 +72,7 @@ mod tests {
     }
 
     #[test]
-    fn la_del_encabezado_conserva_la_estructura() {
+    fn the_header_one_keeps_the_shape() {
         assert_eq!(logo_rows().len(), LOGO_ROWS);
         assert_eq!(
             logo_rows(),

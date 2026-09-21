@@ -156,22 +156,22 @@ mod tests {
     }
 
     #[test]
-    fn corta_por_palabras() {
-        let l = Line::from("hola mundo cruel y grande");
+    fn breaks_on_words() {
+        let l = Line::from("word wrap here at ten");
         assert_eq!(
             texts(&wrap_line(&l, 10)),
-            vec!["hola mundo", "cruel y", "grande"]
+            vec!["word wrap", "here at", "ten"]
         );
     }
 
     #[test]
-    fn palabra_larga_por_caracteres() {
+    fn a_long_word_by_characters() {
         let l = Line::from("abcdefghijkl xy");
         assert_eq!(texts(&wrap_line(&l, 5)), vec!["abcde", "fghij", "kl xy"]);
     }
 
     #[test]
-    fn conserva_estilos_y_anchos_dobles() {
+    fn keeps_styles_and_double_widths() {
         let l = Line::from(vec![
             Span::styled("ab ", Style::new().fg(ratatui::style::Color::Red)),
             Span::raw("日本語 x"),
@@ -182,10 +182,10 @@ mod tests {
     }
 
     #[test]
-    fn vacia_y_recorte() {
+    fn empty_and_trimmed() {
         assert_eq!(texts(&wrap_line(&Line::from(""), 8)), vec![""]);
-        assert_eq!(truncate("hola mundo", 6), "hola …");
-        assert_eq!(truncate("hola", 6), "hola");
+        assert_eq!(truncate("word wrap", 6), "word …");
+        assert_eq!(truncate("word", 6), "word");
         let p = pad_line(Line::from("ab"), 5, Style::new());
         assert_eq!(p.width(), 5);
     }

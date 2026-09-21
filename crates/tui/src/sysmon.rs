@@ -179,14 +179,14 @@ mod tests {
     }
 
     #[test]
-    fn el_porcentaje_de_ram_sale_del_total() {
+    fn the_ram_percentage_comes_from_the_total() {
         let x = Sample::new(10.0, 16 << 30, 32 << 30, 0);
         assert_eq!(x.ram, 50.0);
         assert_eq!(Sample::new(0.0, 5, 0, 0).ram, 0.0);
     }
 
     #[test]
-    fn el_pico_es_el_maximo_de_la_ventana() {
+    fn the_peak_is_the_maximum_of_the_window() {
         let mut h = History::default();
         assert!(h.current().is_none());
         assert_eq!(h.peak_cpu(), 0.0);
@@ -199,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn la_ventana_olvida_lo_anterior_a_tres_minutos() {
+    fn the_window_forgets_anything_older_than_three_minutes() {
         let base = Instant::now();
         let mut h = History::default();
         h.push_at(base, s(99.0, 99.0));
@@ -213,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn el_ritmo_por_defecto_es_el_lento() {
+    fn the_default_pace_is_the_slow_one() {
         let p = Pace::default();
         assert!(!p.is_fast());
         assert_eq!(p.interval(), IDLE_INTERVAL);
@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn gigas_con_un_decimal() {
+    fn gigabytes_with_one_decimal() {
         assert_eq!(fmt_gib(32 << 30), "32.0");
         assert_eq!(fmt_gib((18u64 << 30) + (200 << 20)), "18.2");
     }

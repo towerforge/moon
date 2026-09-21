@@ -140,7 +140,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn aplica_y_borra() {
+    fn applies_and_clears() {
         let mut p = GenerationParams::default();
         p.apply("temperature", "0.2").unwrap();
         p.apply("num_ctx", "16384").unwrap();
@@ -160,7 +160,7 @@ mod tests {
     }
 
     #[test]
-    fn pares() {
+    fn pairs() {
         assert_eq!(
             parse_pairs("a=1 b=x").unwrap(),
             vec![
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_respeta_lo_fijado() {
+    fn merge_keeps_what_was_set() {
         let base = GenerationParams {
             temperature: Some(0.7),
             num_ctx: Some(8192),

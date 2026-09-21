@@ -219,12 +219,12 @@ fn row_line(t: &Theme, label: &str, detail: &str, st: RowState, w: usize) -> Lin
         active,
         dim,
     } = st;
+    // the row under the cursor goes in moon-soft, in use or not: `❯` marks
+    // where you are, `✓` what is in use
     let label_style = if dim {
         t.muted()
-    } else if selected && active {
-        t.accent_bold()
     } else if selected {
-        t.bold()
+        t.soft_bold()
     } else if active {
         t.accent()
     } else {

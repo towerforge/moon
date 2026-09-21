@@ -289,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn filtra_y_mueve() {
+    fn filters_and_moves() {
         let mut p = Picker::new(
             "Model",
             vec![
@@ -316,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn filas_por_seccion() {
+    fn rows_per_section() {
         let mut a = item("ollama/llama3.1:8b", false);
         a.group = Some("ollama".into());
         let mut b = item("ollama/qwen2.5-coder:14b", true);

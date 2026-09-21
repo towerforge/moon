@@ -367,10 +367,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ndjson_troceado_a_mitad_de_linea() {
+    async fn ndjson_cut_mid_line() {
         let s = chunks(&[
-            "{\"message\":{\"role\":\"assistant\",\"content\":\"Ho\"},\"done\":false}\n{\"message\":{\"role\":\"assist",
-            "ant\",\"content\":\"la\"},\"done\":false}\n",
+            "{\"message\":{\"role\":\"assistant\",\"content\":\"He\"},\"done\":false}\n{\"message\":{\"role\":\"assist",
+            "ant\",\"content\":\"llo\"},\"done\":false}\n",
             "{\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"hm\"},\"done\":false}\n",
             "{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"eval_count\":10,\"eval_duration\":500000000,\"prompt_eval_count\":3}\n",
         ]);
@@ -378,8 +378,8 @@ mod tests {
             .map(|e| e.unwrap())
             .collect()
             .await;
-        assert_eq!(events[0], ChatEvent::Delta("Ho".into()));
-        assert_eq!(events[1], ChatEvent::Delta("la".into()));
+        assert_eq!(events[0], ChatEvent::Delta("He".into()));
+        assert_eq!(events[1], ChatEvent::Delta("llo".into()));
         assert_eq!(events[2], ChatEvent::Thinking("hm".into()));
         match &events[3] {
             ChatEvent::Done(u) => {
@@ -392,7 +392,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelacion() {
+    async fn cancellation() {
         let cancel = CancellationToken::new();
         cancel.cancel();
         let s = stream::pending::<Result<Bytes, std::io::Error>>();
@@ -404,7 +404,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn error_en_linea() {
+    async fn error_on_a_line() {
         let s = chunks(&["{\"error\":\"model requires more memory\"}\n"]);
         let mut st = chat_stream(s, CancellationToken::new());
         match st.next().await {
@@ -414,7 +414,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ps_dice_lo_que_ocupa_el_modelo_cargado() {
+    async fn ps_reports_what_the_loaded_model_takes() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/ps"))
@@ -441,7 +441,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ps_vacio_es_modelo_descargado() {
+    async fn an_empty_ps_means_the_model_is_unloaded() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/ps"))
@@ -455,7 +455,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tags_y_show() {
+    async fn tags_and_show() {
         let server = MockServer::start().await;
         Mock::given(method("GET")).and(path("/api/tags"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -495,9 +495,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_completo_y_modelo_inexistente() {
+    async fn full_chat_and_a_missing_model() {
         let server = MockServer::start().await;
-        let body = "{\"message\":{\"role\":\"assistant\",\"content\":\"hola\"},\"done\":false}\n{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n";
+        let body = "{\"message\":{\"role\":\"assistant\",\"content\":\"hello\"},\"done\":false}\n{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n";
         Mock::given(method("POST"))
             .and(path("/api/chat"))
             .and(body_partial_json(
@@ -519,7 +519,7 @@ mod tests {
         let p = OllamaProvider::new("ollama", &server.uri(), None, None, None).unwrap();
         let req = ChatRequest {
             model: "x".into(),
-            messages: vec![Message::user("hola")],
+            messages: vec![Message::user("hello")],
             params: Default::default(),
         };
         let events: Vec<_> = p
@@ -529,7 +529,7 @@ mod tests {
             .map(|e| e.unwrap())
             .collect()
             .await;
-        assert_eq!(events[0], ChatEvent::Delta("hola".into()));
+        assert_eq!(events[0], ChatEvent::Delta("hello".into()));
         assert!(matches!(events[1], ChatEvent::Done(_)));
 
         let req = ChatRequest {
@@ -544,7 +544,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sin_servidor_es_unreachable() {
+    async fn with_no_server_it_is_unreachable() {
         let p = OllamaProvider::new("ollama", "http://127.0.0.1:1", None, None, None).unwrap();
         match p.health().await {
             Err(ProviderError::Unreachable { url, .. }) => assert_eq!(url, "http://127.0.0.1:1"),

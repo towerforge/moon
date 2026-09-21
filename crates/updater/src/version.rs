@@ -140,21 +140,21 @@ mod tests {
     }
 
     #[test]
-    fn acepta_la_v_del_tag() {
+    fn it_accepts_the_v_from_the_tag() {
         assert_eq!(v("v1.2.3"), Version::new(1, 2, 3));
         assert_eq!(v("1.2.3"), Version::new(1, 2, 3));
         assert_eq!(v("  v0.1.1 "), Version::new(0, 1, 1));
     }
 
     #[test]
-    fn rechaza_lo_que_no_es_version() {
+    fn it_rejects_what_is_not_a_version() {
         for s in ["", "1.2", "1.2.3.4", "1.2.x", "v", "1.2.3-", "abc"] {
             assert!(s.parse::<Version>().is_err(), "{s} should not parse");
         }
     }
 
     #[test]
-    fn ordena_por_numero_y_deja_las_pre_abajo() {
+    fn it_orders_by_number_and_puts_pre_releases_last() {
         assert!(v("0.2.0") > v("0.1.9"));
         assert!(v("1.0.0") > v("0.9.9"));
         assert!(v("0.1.2") > v("0.1.1"));
@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn se_escribe_como_se_lee() {
+    fn it_prints_as_it_parses() {
         for s in ["0.1.1", "1.2.3-rc.1"] {
             assert_eq!(v(s).to_string(), s);
         }
@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn la_metadata_de_build_no_cuenta() {
+    fn build_metadata_does_not_count() {
         assert_eq!(v("1.2.3+abc"), v("1.2.3"));
     }
 }

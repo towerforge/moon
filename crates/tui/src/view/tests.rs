@@ -42,47 +42,49 @@ fn screen(term: &Terminal<TestBackend>) -> Vec<String> {
 }
 
 #[test]
-fn pantalla_de_arranque() {
+fn startup_screen() {
     let mut app = app();
     app.loading = false;
     let mut term = Terminal::new(TestBackend::new(90, 24)).unwrap();
     term.draw(|f| view(&mut app, f)).unwrap();
     let s = screen(&term);
-    assert!(s[0].starts_with("   ▄█        moon v0.1.0"), "{}", s[0]);
+    // a blank row keeps the moon off the top edge
+    assert_eq!(s[0].trim(), "");
+    assert!(s[1].starts_with("   ▄█        moon v0.1.0"), "{}", s[1]);
     assert!(
-        s[1].starts_with("  ███        no model · /model"),
-        "{}",
-        s[1]
-    );
-    assert!(
-        s[2].starts_with("  ████▄▄▄█   ~/Towerforge/moon"),
+        s[2].starts_with("  ███        no model · /model"),
         "{}",
         s[2]
     );
     assert!(
-        s[3].starts_with("   ▀████▀    default configuration"),
+        s[3].starts_with("  ████▄▄▄█   ~/Towerforge/moon"),
         "{}",
         s[3]
     );
-    assert_eq!(s[4].trim(), "");
+    assert!(
+        s[4].starts_with("   ▀████▀    default configuration"),
+        "{}",
+        s[4]
+    );
+    assert_eq!(s[5].trim(), "");
     assert!(s[20].starts_with("─────"));
     assert!(s[21].starts_with("❯ "));
     assert!(s[23].contains("/help"));
     let buf = term.backend().buffer();
     // the moon's color is `moon`, and the name `moon` goes in `moon` and bold
-    assert_eq!(buf[(3, 0)].fg, app.theme.moon);
-    assert_eq!(buf[(13, 0)].fg, app.theme.moon);
-    assert!(buf[(13, 0)]
+    assert_eq!(buf[(3, 1)].fg, app.theme.moon);
+    assert_eq!(buf[(13, 1)].fg, app.theme.moon);
+    assert!(buf[(13, 1)]
         .modifier
         .contains(ratatui::style::Modifier::BOLD));
-    assert_eq!(buf[(18, 0)].fg, app.theme.ink_muted);
+    assert_eq!(buf[(18, 1)].fg, app.theme.ink_muted);
     // the cursor is a `moon` block on the typing cell, and the terminal's stays hidden
     assert_eq!(buf[(2, 21)].bg, app.theme.moon);
     assert_eq!(buf[(2, 21)].fg, app.theme.on_moon);
 }
 
 #[test]
-fn fila_del_modelo_atenuada() {
+fn the_model_row_is_dimmed() {
     use crate::app::{Current, ProviderState};
     let mut app = app();
     app.loading = false;
@@ -101,16 +103,16 @@ fn fila_del_modelo_atenuada() {
     term.draw(|f| view(&mut app, f)).unwrap();
     let s = screen(&term);
     let row = "qwen2.5-coder:14b (ctx 32.8k) · ollama · http://localhost:11434";
-    assert!(s[1].starts_with(&format!("  ███        {row}")), "{}", s[1]);
+    assert!(s[2].starts_with(&format!("  ███        {row}")), "{}", s[2]);
     // the whole model row goes in `ink-muted`, name included
     let buf = term.backend().buffer();
     for x in 13..13 + row.chars().count() {
-        assert_eq!(buf[(x as u16, 1)].fg, app.theme.ink_muted, "columna {x}");
+        assert_eq!(buf[(x as u16, 2)].fg, app.theme.ink_muted, "column {x}");
     }
 }
 
 #[test]
-fn selector_de_modelo_agrupado() {
+fn grouped_model_picker() {
     use crate::app::{Current, ProviderState};
     use moon_core::{Health, ModelInfo};
     let mut app = app();
@@ -168,8 +170,8 @@ fn selector_de_modelo_agrupado() {
         .collect();
     assert!(bar.starts_with('█') && bar.contains('│'), "{bar:?}\n{s}");
     // every row carries its number while there is a digit left for it, the
-    // cursor marks one with `❯` and the model in use closes with `✓`; being
-    // both, the name goes in moon and bold
+    // cursor marks one with `❯` and the model in use closes with `✓`; under
+    // the cursor the name goes in moon-soft and bold
     let buf = term.backend().buffer();
     let y = rows
         .iter()
@@ -177,7 +179,7 @@ fn selector_de_modelo_agrupado() {
         .unwrap() as u16;
     let row = &rows[y as usize];
     let x = row[..row.find("model-03").unwrap()].chars().count() as u16;
-    assert_eq!(buf[(x, y)].style().fg, Some(app.theme.moon));
+    assert_eq!(buf[(x, y)].style().fg, Some(app.theme.moon_soft));
     assert!(buf[(x, y)]
         .modifier
         .contains(ratatui::style::Modifier::BOLD));
@@ -220,7 +222,7 @@ fn selector_de_modelo_agrupado() {
 }
 
 #[test]
-fn dialogos_de_sesion() {
+fn session_dialogs() {
     use crate::app::{Choice, SessionAction};
     use crate::picker::Picker;
     let mut app = app();
@@ -231,7 +233,7 @@ fn dialogos_de_sesion() {
         picker: Box::new(picker),
         action: SessionAction::Delete {
             id: "x".into(),
-            title: "explica el módulo de sesiones".into(),
+            title: "explain the sessions module".into(),
             choice: Choice::Delete,
             open: false,
         },
@@ -241,12 +243,13 @@ fn dialogos_de_sesion() {
     let rows = screen(&term);
     let s = rows.join("\n");
     assert!(s.contains(" Delete session"), "{s}");
-    assert!(s.contains("«explica el módulo de sesiones»"), "{s}");
+    assert!(s.contains("«explain the sessions module»"), "{s}");
     // two options under the cursor, like any other list; no buttons
     assert!(s.contains(" ❯ Delete"), "{s}");
     assert!(s.contains("   Keep"), "{s}");
     assert!(s.contains("↑↓ choose · enter confirm · esc keep"), "{s}");
-    // the option under the cursor goes in ink and bold; the other one does not
+    // the option under the cursor goes in moon-soft and bold; the other one
+    // does not
     let buf = term.backend().buffer();
     let y = rows.iter().position(|r| r.contains("❯ Delete")).unwrap();
     let yk = rows.iter().position(|r| r.contains("Keep")).unwrap();
@@ -254,7 +257,7 @@ fn dialogos_de_sesion() {
     assert!(buf[(x, y as u16)]
         .modifier
         .contains(ratatui::style::Modifier::BOLD));
-    assert_eq!(buf[(x, y as u16)].style().fg, Some(app.theme.ink));
+    assert_eq!(buf[(x, y as u16)].style().fg, Some(app.theme.moon_soft));
     assert!(!buf[(x, yk as u16)]
         .modifier
         .contains(ratatui::style::Modifier::BOLD));
@@ -275,34 +278,34 @@ fn dialogos_de_sesion() {
         picker,
         action: SessionAction::Rename {
             id: "x".into(),
-            input: "nuevo título".into(),
+            input: "new title".into(),
         },
     });
     term.draw(|f| view(&mut app, f)).unwrap();
     let s = screen(&term).join("\n");
     assert!(s.contains(" Rename session"), "{s}");
-    assert!(s.contains("❯ nuevo título█"), "{s}");
+    assert!(s.contains("❯ new title█"), "{s}");
     assert!(s.contains("enter save · esc cancel"), "{s}");
 }
 
 #[test]
-fn indicador_de_ir_al_final() {
+fn jump_to_bottom_indicator() {
     use crate::app::Item;
     let mut app = app();
     app.loading = false;
     for i in 0..40 {
-        app.items.push(Item::Info(format!("línea {i}")));
+        app.items.push(Item::Info(format!("line {i}")));
     }
     let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
     term.draw(|f| view(&mut app, f)).unwrap();
     assert!(
         app.jump_rect.is_none(),
-        "siguiendo el final no hay indicador"
+        "following the bottom there is no indicator"
     );
     app.scroll_by(-5);
     term.draw(|f| view(&mut app, f)).unwrap();
     let s = screen(&term);
-    let rect = app.jump_rect.expect("indicador visible al subir");
+    let rect = app.jump_rect.expect("the indicator shows once scrolled up");
     // last row of the conversation: 20 rows − 5 lower zones − the blank one − 1
     assert_eq!(rect.y, 13);
     assert!(s[13].contains("↓ Jump to bottom"), "{}", s[13]);
@@ -329,7 +332,7 @@ fn ctrl_key(code: crossterm::event::KeyCode) -> Action {
 }
 
 #[test]
-fn actividad_a_la_izquierda_y_estado_a_la_derecha() {
+fn activity_on_the_left_and_status_on_the_right() {
     use crate::app::{Current, Generation};
     use std::time::Instant;
     let mut app = app();
@@ -364,7 +367,7 @@ fn actividad_a_la_izquierda_y_estado_a_la_derecha() {
 }
 
 #[test]
-fn mediciones_de_la_maquina_abajo_a_la_derecha() {
+fn machine_readings_at_the_bottom_right() {
     use crate::app::Current;
     use crate::sysmon::Sample;
     let mut app = app();
@@ -397,7 +400,7 @@ fn mediciones_de_la_maquina_abajo_a_la_derecha() {
 }
 
 #[test]
-fn el_tamano_del_modelo_cargado_va_tras_su_nombre() {
+fn the_loaded_models_size_goes_after_its_name() {
     use crate::app::{Current, LoadedState};
     use crate::sysmon::Sample;
     use moon_core::LoadedModel;
@@ -440,31 +443,31 @@ fn el_tamano_del_modelo_cargado_va_tras_su_nombre() {
 }
 
 #[test]
-fn la_seleccion_se_resalta() {
+fn the_selection_is_highlighted() {
     use crate::app::{Item, Selection};
     let mut app = app();
     app.loading = false;
     app.items.clear(); // with no providers, App::new leaves an error in the conversation
-    app.items.push(Item::Info("uno dos tres".into()));
+    app.items.push(Item::Info("one two four".into()));
     let mut term = Terminal::new(TestBackend::new(60, 14)).unwrap();
     term.draw(|f| view(&mut app, f)).unwrap();
-    // row 5 = "uno dos tres"; select "dos"
+    // row 6 = "one two four"; select "two"
     app.selection = Some(Selection {
-        anchor: (5, 4),
-        head: (5, 6),
+        anchor: (6, 4),
+        head: (6, 6),
         dragging: false,
     });
     term.draw(|f| view(&mut app, f)).unwrap();
     let buf = term.backend().buffer();
-    assert_eq!(buf[(4, 5)].bg, app.theme.moon);
-    assert_eq!(buf[(6, 5)].bg, app.theme.moon);
-    assert_ne!(buf[(7, 5)].bg, app.theme.moon);
-    assert_ne!(buf[(3, 5)].bg, app.theme.moon);
-    assert_eq!(app.selection_text(), "dos");
+    assert_eq!(buf[(4, 6)].bg, app.theme.moon);
+    assert_eq!(buf[(6, 6)].bg, app.theme.moon);
+    assert_ne!(buf[(7, 6)].bg, app.theme.moon);
+    assert_ne!(buf[(3, 6)].bg, app.theme.moon);
+    assert_eq!(app.selection_text(), "two");
 }
 
 #[test]
-fn el_recuento_de_ficheros_va_en_la_fila_de_estado() {
+fn the_file_count_goes_in_the_status_row() {
     use moon_core::Spec;
     let mut app = app();
     app.loading = false;
@@ -498,7 +501,7 @@ fn el_recuento_de_ficheros_va_en_la_fila_de_estado() {
 }
 
 #[test]
-fn panel_de_ficheros_y_arbol() {
+fn files_panel_and_tree() {
     use moon_core::Spec;
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
@@ -522,7 +525,7 @@ fn panel_de_ficheros_y_arbol() {
     let footer = rows
         .iter()
         .find(|r| r.contains("esc close"))
-        .expect("pie del panel");
+        .expect("the panel footer");
     assert!(footer.contains("enter detach") && footer.contains("ctrl+a add"));
 
     // ctrl+a opens the tree at the root: folders first, then files
@@ -548,7 +551,7 @@ fn panel_de_ficheros_y_arbol() {
 }
 
 #[test]
-fn panel_de_ayuda() {
+fn help_panel() {
     let mut app = app();
     app.panel = Some(Panel::Help(HelpState::default()));
     let mut term = Terminal::new(TestBackend::new(100, 70)).unwrap();
@@ -556,7 +559,10 @@ fn panel_de_ayuda() {
     let rows = screen(&term);
     let s = rows.join("\n");
     // the title row carries the sections, and it opens on the first one
-    let title = rows.iter().find(|r| r.contains("Help")).expect("título");
+    let title = rows
+        .iter()
+        .find(|r| r.contains("Help"))
+        .expect("the title row");
     assert!(title.contains("General"), "{title}");
     assert!(title.contains("Commands"), "{title}");
     assert!(title.contains("Keys"), "{title}");
@@ -572,7 +578,7 @@ fn panel_de_ayuda() {
     let footer = rows
         .iter()
         .find(|r| r.contains("esc close"))
-        .expect("pie del panel");
+        .expect("the panel footer");
     assert!(footer.contains("tab section"), "{footer}");
     assert!(footer.contains("↑↓ scroll"), "{footer}");
     // on a tall terminal the section fits whole: no position in the footer
@@ -585,7 +591,10 @@ fn panel_de_ayuda() {
     let rows = screen(&term);
     let s = rows.join("\n");
     assert!(s.contains("/provider [id]"), "{s}");
-    let title = rows.iter().find(|r| r.contains("Help")).expect("título");
+    let title = rows
+        .iter()
+        .find(|r| r.contains("Help"))
+        .expect("the title row");
     assert!(
         title.contains(&format!("{} commands", SPECS.len())),
         "{title}"
@@ -598,7 +607,10 @@ fn panel_de_ayuda() {
     let s = rows.join("\n");
     assert!(s.contains("ctrl+p"), "{s}");
     assert!(!s.contains("/model [name]"), "{s}");
-    let title = rows.iter().find(|r| r.contains("Help")).expect("título");
+    let title = rows
+        .iter()
+        .find(|r| r.contains("Help"))
+        .expect("the title row");
     assert!(title.contains(&format!("{} keys", KEYS.len())), "{title}");
 
     // shift+tab wraps back round to General
@@ -622,7 +634,7 @@ fn panel_de_ayuda() {
     let head = rows
         .iter()
         .position(|r| r.contains("/params"))
-        .expect("la fila de /params");
+        .expect("the /params row");
     let col = rows[head][..rows[head].find("generation").unwrap()]
         .chars()
         .count();
@@ -630,14 +642,14 @@ fn panel_de_ayuda() {
     let indent = cont.chars().take_while(|c| *c == ' ').count();
     assert!(
         !cont.trim().is_empty(),
-        "la descripción de /params se parte"
+        "the /params description is cut off"
     );
     assert_eq!(indent, col, "{cont}");
     assert!(col >= 10, "{cont}");
 }
 
 #[test]
-fn la_ayuda_hace_scroll() {
+fn the_help_scrolls() {
     let mut app = app();
     app.panel = Some(Panel::Help(HelpState {
         tab: HelpTab::Commands,
@@ -647,9 +659,12 @@ fn la_ayuda_hace_scroll() {
     term.draw(|f| view(&mut app, f)).unwrap();
     let s = screen(&term).join("\n");
     assert!(s.contains("/provider [id]"));
-    assert!(!s.contains("/quit"), "los comandos no caben sin scroll");
+    assert!(
+        !s.contains("/quit"),
+        "the commands do not fit without scrolling"
+    );
     assert!(s.contains("↑↓ scroll · esc close"));
-    assert!(s.contains("1-"), "posición en el pie");
+    assert!(s.contains("1-"), "position in the footer");
     let Some(Panel::Help(h)) = app.panel else {
         unreachable!()
     };
@@ -670,7 +685,7 @@ fn la_ayuda_hace_scroll() {
 }
 
 #[test]
-fn sugerencias_sobre_la_caja() {
+fn suggestions_above_the_box() {
     let mut app = app();
     app.loading = false;
     let tx = tx_dummy();
@@ -694,8 +709,8 @@ fn sugerencias_sobre_la_caja() {
     // titled and counted like a panel, and with no surface under it
     assert!(s.contains(" Commands"), "{s}");
     assert!(s.contains("3 commands"), "{s}");
-    // the first one carries the cursor and goes in moon and bold; the second
-    // one is plain moon
+    // the first one carries the cursor and the tail of its name goes in
+    // moon-soft; the second one, in ink-muted
     let buf = term.backend().buffer();
     let y_model = rows
         .iter()
@@ -711,10 +726,19 @@ fn sugerencias_sobre_la_caja() {
             .add_modifier
             .contains(ratatui::style::Modifier::BOLD)
     };
+    // `/s`, what is already typed, goes in moon and bold on every row, as in
+    // the box; the rest of the name is moon-soft under the cursor and plain
+    // ink-muted on the others
+    assert_eq!(buf[(3, y_model)].style().fg, Some(app.theme.moon));
+    assert!(bold(3, y_model));
     assert_eq!(buf[(4, y_model)].style().fg, Some(app.theme.moon));
     assert!(bold(4, y_model));
     assert_eq!(buf[(4, y_models)].style().fg, Some(app.theme.moon));
-    assert!(!bold(4, y_models));
+    assert!(bold(4, y_models));
+    assert_eq!(buf[(5, y_model)].style().fg, Some(app.theme.moon_soft));
+    assert!(!bold(5, y_model));
+    assert_eq!(buf[(5, y_models)].style().fg, Some(app.theme.ink_muted));
+    assert!(!bold(5, y_models));
     assert_eq!(buf[(4, y_model)].bg, ratatui::style::Color::Reset);
     assert_eq!(buf[(4, y_models)].bg, ratatui::style::Color::Reset);
     // the typed command goes in moon and bold in the box

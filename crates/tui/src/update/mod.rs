@@ -13,8 +13,8 @@ use std::sync::Arc;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use moon_updater::{
-    cache::CheckCache, install, unpack, verify_sha256, Client, Release, Target, UpdateError,
-    Version,
+    cache::CheckCache, install, unpack, verify_sha256, Client, Refusal, Release, Target,
+    UpdateError, Version,
 };
 use ratatui::{TerminalOptions, Viewport};
 use tokio::sync::mpsc;
@@ -84,6 +84,9 @@ pub enum Phase {
     Working(Step),
     Done,
     Cancelled,
+    /// Stopped before downloading anything: this binary is not ours to
+    /// replace, and the box says what updates it instead.
+    Refused(Refusal),
     Failed(String),
 }
 
@@ -158,7 +161,7 @@ impl State {
                 .as_ref()
                 .map(|r| Outcome::Installed(r.version.clone()))
                 .unwrap_or(Outcome::UpToDate),
-            Phase::Failed(_) => Outcome::Failed,
+            Phase::Refused(_) | Phase::Failed(_) => Outcome::Failed,
             _ => Outcome::Cancelled,
         }
     }
@@ -273,9 +276,16 @@ fn apply(
                 state.phase = Phase::Available;
                 return Some(state.outcome());
             }
-            if let Err(why) = allowed(&state.dest, opts.force) {
-                state.phase = Phase::Failed(why);
-                return Some(Outcome::Failed);
+            match allowed(&state.dest, opts.force) {
+                Ok(()) => {}
+                Err(Blocked::Refused(r)) => {
+                    state.phase = Phase::Refused(r);
+                    return Some(Outcome::Failed);
+                }
+                Err(Blocked::Unwritable(e)) => {
+                    state.phase = Phase::Failed(e.to_string());
+                    return Some(Outcome::Failed);
+                }
             }
             if opts.yes {
                 *worker = Some(spawn_install(client, state, tx));
@@ -383,14 +393,32 @@ async fn install_release(
     Ok(verified)
 }
 
-/// Whether this binary is ours to replace, and whether we can write there.
-fn allowed(dest: &Path, force: bool) -> Result<(), String> {
-    if !force {
-        if let Some(why) = install::classify(dest).refusal() {
-            return Err(why.to_string());
+/// Why the update stops before downloading anything.
+#[derive(Debug)]
+enum Blocked {
+    /// Not ours to replace: cargo's, or a build under `target/`.
+    Refused(Refusal),
+    /// Ours, but the directory cannot be written.
+    Unwritable(UpdateError),
+}
+
+impl std::fmt::Display for Blocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Blocked::Refused(r) => r.fmt(f),
+            Blocked::Unwritable(e) => e.fmt(f),
         }
     }
-    install::check_writable(dest).map_err(|e| e.to_string())
+}
+
+/// Whether this binary is ours to replace, and whether we can write there.
+fn allowed(dest: &Path, force: bool) -> Result<(), Blocked> {
+    if !force {
+        if let Some(r) = install::classify(dest).refusal() {
+            return Err(Blocked::Refused(r));
+        }
+    }
+    install::check_writable(dest).map_err(Blocked::Unwritable)
 }
 
 fn remember(state_dir: Option<&Path>, latest: &Version) {
@@ -422,7 +450,7 @@ async fn piped(opts: Options, mut state: State) -> anyhow::Result<Outcome> {
         anyhow::bail!("no interactive terminal: pass --yes to update without asking");
     }
     if let Err(why) = allowed(&state.dest, opts.force) {
-        anyhow::bail!(why);
+        anyhow::bail!("{why}");
     }
     println!("moon {} → {next}", state.current);
     println!("downloading {}", state.asset_name());
@@ -568,7 +596,25 @@ mod tests {
             &opts(false, true),
         );
         assert_eq!(done, Some(Outcome::Failed));
-        assert!(matches!(&s.phase, Phase::Failed(e) if e.contains("make build")));
+        assert!(matches!(&s.phase, Phase::Refused(r) if r.fix == "make build"));
+        assert!(h.worker.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_cargo_install_is_sent_back_to_cargo() {
+        let mut h = Harness::new();
+        let mut s = state_at(PathBuf::from("/home/j/.cargo/bin/moon"));
+        let done = h.apply(
+            Msg::Release(Ok(release("0.2.0"))),
+            &mut s,
+            &opts(false, true),
+        );
+        assert_eq!(done, Some(Outcome::Failed));
+        assert!(
+            matches!(&s.phase, Phase::Refused(r) if r.fix.starts_with("cargo install")),
+            "{:?}",
+            s.phase
+        );
         assert!(h.worker.is_none());
     }
 
@@ -638,7 +684,10 @@ mod tests {
         let cargo = PathBuf::from("/home/j/.cargo/bin/moon");
         assert!(allowed(&cargo, false).is_err());
         let dev = PathBuf::from("/home/j/moon/target/release/moon");
-        assert!(allowed(&dev, false).unwrap_err().contains("make build"));
+        assert!(allowed(&dev, false)
+            .unwrap_err()
+            .to_string()
+            .contains("make build"));
         // with --force the only thing left to check is the permission
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("moon");

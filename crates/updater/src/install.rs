@@ -20,20 +20,40 @@ pub enum InstallKind {
 }
 
 impl InstallKind {
-    /// What to say when the update stops because of where the binary lives.
-    pub fn refusal(self) -> Option<&'static str> {
+    /// Why the update stops because of where the binary lives, and what
+    /// updates it instead.
+    pub fn refusal(self) -> Option<Refusal> {
         match self {
             InstallKind::Release => None,
-            InstallKind::Cargo => Some(
-                "this moon came from cargo: update it with \
-                 `cargo install --git https://github.com/towerforge/moon moon-cli` \
-                 (or pass --force to overwrite it anyway)",
-            ),
-            InstallKind::Dev => Some(
-                "this moon is a local build under target/: `make build` rebuilds it \
-                 (or pass --force to overwrite it anyway)",
-            ),
+            InstallKind::Cargo => Some(Refusal {
+                why: "this moon came from cargo",
+                fix: "cargo install --git https://github.com/towerforge/moon moon-cli",
+            }),
+            InstallKind::Dev => Some(Refusal {
+                why: "this moon is a local build under target/",
+                fix: "make build",
+            }),
         }
+    }
+}
+
+/// An update that stops before downloading anything: the reason, and the
+/// command that updates this moon instead. Two pieces so the panel can give
+/// the command a line of its own instead of cutting it short; as text, one
+/// sentence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Refusal {
+    pub why: &'static str,
+    pub fix: &'static str,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: update it with `{}` (or pass --force to overwrite it anyway)",
+            self.why, self.fix
+        )
     }
 }
 
@@ -179,6 +199,19 @@ mod tests {
             classify(Path::new("/opt/target/bin/moon")),
             InstallKind::Release
         );
+    }
+
+    #[test]
+    fn the_refusal_names_the_command_that_updates_it_instead() {
+        assert_eq!(InstallKind::Release.refusal(), None);
+        let cargo = InstallKind::Cargo.refusal().unwrap();
+        assert!(cargo.fix.starts_with("cargo install --git "));
+        assert_eq!(
+            cargo.to_string(),
+            "this moon came from cargo: update it with `cargo install --git \
+             https://github.com/towerforge/moon moon-cli` (or pass --force to overwrite it anyway)"
+        );
+        assert_eq!(InstallKind::Dev.refusal().unwrap().fix, "make build");
     }
 
     #[test]

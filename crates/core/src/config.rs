@@ -16,6 +16,7 @@ pub struct Config {
     pub params: GenerationParams,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub theme: ThemeConfig,
+    pub tools: ToolsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -50,6 +51,41 @@ impl Default for GeneralConfig {
             max_attachment_bytes: crate::context::DEFAULT_MAX_BYTES,
             system_stats: true,
             update_check: false,
+        }
+    }
+}
+
+/// The model editing files: off unless asked for, and even then only under
+/// the start-up directory and with every write approved on screen. There is
+/// no setting that skips the approval.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ToolsConfig {
+    /// `Read files`: offer `read_file` and `list_dir` at startup. The
+    /// `/tools` panel does the same for one conversation.
+    pub enabled: bool,
+    /// `Edit existing files`: add `edit_file` when they come on at startup.
+    /// Only read at startup: from the panel, the boxes decide.
+    pub edit: bool,
+    /// `Create new files`: add `write_file`, under the same rule as `edit`.
+    pub create: bool,
+    /// Files bigger than this are neither read nor edited.
+    pub max_file_bytes: usize,
+    /// Paths the model may not touch, as globs relative to the project root,
+    /// on top of `.git/` and the secrets moon never attaches.
+    pub deny: Vec<String>,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            // a file that only says `enabled = true` keeps meaning what it
+            // meant before these two existed: all four tools
+            edit: true,
+            create: true,
+            max_file_bytes: crate::context::DEFAULT_MAX_BYTES,
+            deny: vec![".github/workflows/**".to_string()],
         }
     }
 }
@@ -96,9 +132,19 @@ impl ProviderConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigSource {
-    /// There was no file: default values.
-    Default,
+    /// There was no file: default values, and where `moon config init` would
+    /// write one.
+    Default(PathBuf),
     File(PathBuf),
+}
+
+impl ConfigSource {
+    /// Where the configuration lives, or would once written.
+    pub fn path(&self) -> &Path {
+        match self {
+            ConfigSource::Default(p) | ConfigSource::File(p) => p,
+        }
+    }
 }
 
 impl Config {
@@ -129,9 +175,10 @@ impl Config {
                 Self::parse(&text, path)?,
                 ConfigSource::File(path.to_path_buf()),
             )),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok((Self::with_defaults(), ConfigSource::Default))
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((
+                Self::with_defaults(),
+                ConfigSource::Default(path.to_path_buf()),
+            )),
             Err(source) => Err(ConfigError::Io {
                 path: path.to_path_buf(),
                 source,
@@ -176,6 +223,28 @@ mod tests {
         assert_eq!(ollama.kind, "ollama");
         assert_eq!(ollama.base_url.as_deref(), Some("http://localhost:11434"));
         assert!(ollama.enabled);
+        // `moon config init` gives reading, and nothing that writes
+        assert_eq!(
+            (cfg.tools.enabled, cfg.tools.edit, cfg.tools.create),
+            (true, false, false)
+        );
+        // the rest of the block stays commented: the defaults apply
+        assert_eq!(
+            cfg.tools.max_file_bytes,
+            ToolsConfig::default().max_file_bytes
+        );
+        assert_eq!(cfg.tools.deny, ToolsConfig::default().deny);
+    }
+
+    #[test]
+    fn a_file_that_only_enables_tools_still_gets_all_four() {
+        // the two scope keys are newer than `enabled`: a configuration
+        // written before them must keep meaning what it meant
+        let cfg = Config::parse("[tools]\nenabled = true\n", Path::new("t")).unwrap();
+        assert_eq!(
+            (cfg.tools.enabled, cfg.tools.edit, cfg.tools.create),
+            (true, true, true)
+        );
     }
 
     #[test]
@@ -209,6 +278,17 @@ moon = "#ffffff"
         );
         assert!(!cfg.providers["lm"].enabled);
         assert_eq!(cfg.theme.overrides["moon"], "#ffffff");
+        // tools stay off unless the file says so
+        assert!(!cfg.tools.enabled);
+        assert_eq!(cfg.tools.deny, vec![".github/workflows/**"]);
+        let with_tools = Config::parse(
+            "[tools]\nenabled = true\ndeny = [\"secrets/**\"]\n",
+            Path::new("t"),
+        )
+        .unwrap();
+        assert!(with_tools.tools.enabled);
+        assert_eq!(with_tools.tools.deny, vec!["secrets/**"]);
+        assert_eq!(with_tools.tools.max_file_bytes, 200_000);
         // back to TOML and again to Config
         let again = Config::parse(&cfg.to_toml(), Path::new("t2")).unwrap();
         assert_eq!(again, cfg);
@@ -230,7 +310,11 @@ moon = "#ffffff"
     #[test]
     fn a_missing_file_is_the_default() {
         let (cfg, src) = Config::load_or_default(Path::new("/no/such/config.toml")).unwrap();
-        assert_eq!(src, ConfigSource::Default);
+        assert_eq!(
+            src,
+            ConfigSource::Default(PathBuf::from("/no/such/config.toml"))
+        );
+        assert_eq!(src.path(), Path::new("/no/such/config.toml"));
         assert!(cfg.providers.contains_key("ollama"));
     }
 }

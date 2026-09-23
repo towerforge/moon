@@ -26,6 +26,7 @@ make run                    # run the TUI from source
 | `crates/core` | The `Provider` trait, the domain types, configuration, XDG paths, JSONL sessions, files in the context. Knows nothing about terminals or HTTP. |
 | `crates/providers/ollama` | Ollama over its native API. |
 | `crates/providers/openai` | Any OpenAI-compatible chat completions API. |
+| `crates/agent` | The model editing files: the harness (the loop), the editor agent, the four tools and the sandbox that keeps every path under the start-up directory. Knows nothing about terminals or HTTP; `docs/harness.md` is the design. |
 | `crates/tui` | The interface, Elm style: `app/mod.rs` holds the state and `update`, each other module under `app/` is one `impl App` about one concern, `view/` paints. |
 | `crates/cli` | The `moon` binary: wires providers, loads configuration, starts the TUI or a subcommand. |
 

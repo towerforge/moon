@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use moon_core::{Message, Role};
+use moon_core::{Message, Role, ToolCall, ToolSpec};
 
 #[derive(Deserialize)]
 pub struct Version {
@@ -73,12 +73,40 @@ pub struct ChatRequest<'a> {
     pub think: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_alive: Option<&'a str>,
+    /// `{"type": "function", "function": {name, description, parameters}}`
+    /// each; left out when there are none, so the request is what it always was.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<Value>,
 }
 
 #[derive(Serialize)]
 pub struct WireMessage {
     pub role: &'static str,
     pub content: String,
+    /// The calls an assistant message made, echoed back in the history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<Value>>,
+    /// On a tool message: which tool answered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// On a tool message: the call it answers, when Ollama gave it an id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+pub fn tool_spec(t: &ToolSpec) -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {"name": t.name, "description": t.description, "parameters": t.parameters}
+    })
+}
+
+fn tool_call(c: &ToolCall) -> Value {
+    let mut v = serde_json::json!({"function": {"name": c.name, "arguments": c.arguments}});
+    if let Some(id) = &c.id {
+        v["id"] = Value::String(id.clone());
+    }
+    v
 }
 
 impl<'a> ChatRequest<'a> {
@@ -114,6 +142,7 @@ impl<'a> ChatRequest<'a> {
             options,
             think: p.think.or(think_default),
             keep_alive,
+            tools: req.tools.iter().map(tool_spec).collect(),
         }
     }
 }
@@ -128,6 +157,10 @@ impl From<&Message> for WireMessage {
                 Role::Tool => "tool",
             },
             content: m.wire_content(),
+            tool_calls: (!m.tool_calls.is_empty())
+                .then(|| m.tool_calls.iter().map(tool_call).collect()),
+            tool_name: m.tool_name.clone(),
+            tool_call_id: m.tool_call_id.clone(),
         }
     }
 }
@@ -150,6 +183,42 @@ pub struct ChunkMessage {
     #[serde(default)]
     pub content: String,
     pub thinking: Option<String>,
+    #[serde(default)]
+    pub tool_calls: Vec<WireToolCall>,
+}
+
+#[derive(Deserialize)]
+pub struct WireToolCall {
+    /// Newer Ollama versions give every call an id; older ones do not.
+    pub id: Option<String>,
+    pub function: WireFunction,
+}
+
+#[derive(Deserialize)]
+pub struct WireFunction {
+    pub name: String,
+    #[serde(default)]
+    pub arguments: Value,
+}
+
+impl From<WireToolCall> for ToolCall {
+    fn from(c: WireToolCall) -> Self {
+        ToolCall {
+            id: c.id.filter(|i| !i.is_empty()),
+            name: c.function.name,
+            arguments: arguments_value(c.function.arguments),
+        }
+    }
+}
+
+/// The arguments are an object, but some models hand them over as a JSON
+/// string: that is parsed; anything else is passed on for the tool to refuse.
+pub fn arguments_value(v: Value) -> Value {
+    match v {
+        Value::String(s) => serde_json::from_str(&s).unwrap_or(Value::String(s)),
+        Value::Null => Value::Object(Map::new()),
+        other => other,
+    }
 }
 
 /// Ollama returns `{"error": "..."}`; otherwise the body as is, truncated.

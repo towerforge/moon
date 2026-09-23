@@ -67,6 +67,7 @@ impl App {
             KeyCode::Char('a') if ctrl => self.input.home(),
             KeyCode::Char('e') if ctrl => self.input.end(),
             KeyCode::Char('j') if ctrl => self.input.newline(),
+            KeyCode::Char('x') if ctrl => self.input.clear(),
             KeyCode::Esc => {
                 if self.is_streaming() {
                     self.cancel_generation();
@@ -114,7 +115,7 @@ impl App {
     }
 
     pub(super) fn ctrl_c(&mut self) {
-        if self.is_streaming() {
+        if self.turn_active() {
             self.cancel_generation();
             return;
         }
@@ -144,6 +145,14 @@ impl App {
         }
         if matches!(self.panel, Some(Panel::SessionAction { .. })) {
             self.handle_session_action_key(key);
+            return;
+        }
+        if matches!(self.panel, Some(Panel::Approval(_))) {
+            self.handle_approval_key(key, tx);
+            return;
+        }
+        if matches!(self.panel, Some(Panel::Tools(_))) {
+            self.handle_tools_key(key);
             return;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);

@@ -11,6 +11,16 @@ impl App {
             SPINNER[self.spinner % SPINNER.len()].to_string(),
             t.accent(),
         );
+        // the model is done for now: what it wants is on screen, waiting
+        if self.waiting_approval() {
+            let mut v = vec![star, Span::raw(" ")];
+            v.extend(self.shimmer("waiting for your approval"));
+            v.push(Span::styled(
+                " · enter apply · s skip · esc cancel the turn",
+                t.muted(),
+            ));
+            return Some(v);
+        }
         match &self.gen {
             Generation::Streaming {
                 started,
@@ -133,7 +143,7 @@ impl App {
         }
     }
 
-    fn current_is_ollama(&self) -> bool {
+    pub(super) fn current_is_ollama(&self) -> bool {
         self.current
             .as_ref()
             .and_then(|c| self.providers.iter().find(|p| p.id == c.provider))
@@ -217,11 +227,37 @@ impl App {
     /// provider is redundant when the model already identifies it.
     pub fn model_spans(&self) -> Vec<Span<'static>> {
         let t = &self.theme;
-        match &self.current {
-            Some(c) => vec![Span::styled(c.model.clone(), t.muted())],
-            None if self.loading => Vec::new(),
-            None => vec![Span::styled("no model", t.muted())],
+        let model = match &self.current {
+            Some(c) => Some(c.model.clone()),
+            None if self.loading => None,
+            None => Some("no model".to_string()),
+        };
+        match model {
+            Some(m) => vec![Span::styled(m, t.muted())],
+            None => Vec::new(),
         }
+    }
+
+    /// The one permanent sign that the model can reach the files, at the
+    /// left of the hints row, `moon` and bold, like the mode indicators of
+    /// Claude Code: `⏵⏵ Read · Edit · Create`, only the boxes that are on
+    /// (`Read` is always one of them: it is the switch itself).
+    pub fn edit_mode_span(&self) -> Option<Span<'static>> {
+        if !self.tools_on {
+            return None;
+        }
+        let (edit, create) = self.tools_scope();
+        let mut words = vec!["Read"];
+        if edit {
+            words.push("Edit");
+        }
+        if create {
+            words.push("Create");
+        }
+        Some(Span::styled(
+            format!("⏵⏵ {}", words.join(" · ")),
+            self.theme.soft_bold(),
+        ))
     }
 
     /// What goes to the right of the model in the hints row: the memory the
@@ -316,6 +352,19 @@ impl App {
                 vec![("tab", "section"), ("↑↓", "scroll"), ("esc", "close")]
             }
             Some(Panel::Machine) => vec![("esc", "close")],
+            Some(Panel::Tools(_)) => vec![
+                ("↑↓", "move"),
+                ("enter", "tick"),
+                ("←→", "change"),
+                ("esc", "save"),
+            ],
+            Some(Panel::Approval(_)) => vec![
+                ("↑↓", "choose"),
+                ("enter", "confirm"),
+                ("s", "skip"),
+                ("pgup/pgdn", "scroll"),
+                ("esc", "cancel turn"),
+            ],
             Some(Panel::SessionAction { action, .. }) => match action {
                 SessionAction::Delete { .. } => {
                     vec![("↑↓", "choose"), ("enter", "confirm"), ("esc", "keep")]
@@ -335,6 +384,9 @@ impl App {
                 " ↑↓ choose · tab or enter to complete · esc to clear"
             }
             false if self.suggestions().is_some() => " tab or enter to complete · esc to clear",
+            false if self.tools_on => {
+                " /tools files · /model switch model · ctrl+s sessions · /help"
+            }
             false => " /model switch model · ctrl+s sessions · ctrl+j newline · /help",
         }
     }

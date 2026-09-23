@@ -327,6 +327,9 @@ where
                 if !msg.content.is_empty() {
                     yield ChatEvent::Delta(msg.content);
                 }
+                for call in msg.tool_calls {
+                    yield ChatEvent::ToolCall(call.into());
+                }
             }
             if chunk.done {
                 yield ChatEvent::Done(usage_from(&chunk));
@@ -389,6 +392,98 @@ mod tests {
             }
             other => panic!("expected Done, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn tool_calls_in_and_out() {
+        // a call arrives as a chunk of its own, with the arguments as an object
+        let s = chunks(&[
+            "{\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"read_file\",\"arguments\":{\"path\":\"a.rs\"}}}]},\"done\":false}\n",
+            "{\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"call_x\",\"function\":{\"index\":0,\"name\":\"list_dir\",\"arguments\":{}}}]},\"done\":false}\n",
+            "{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"eval_count\":4}\n",
+        ]);
+        let events: Vec<_> = chat_stream(s, CancellationToken::new())
+            .map(|e| e.unwrap())
+            .collect()
+            .await;
+        assert_eq!(
+            events[0],
+            ChatEvent::ToolCall(moon_core::ToolCall {
+                id: None,
+                name: "read_file".into(),
+                arguments: serde_json::json!({"path": "a.rs"}),
+            })
+        );
+        // an id, when Ollama gives one, is kept for the tool message
+        assert_eq!(
+            events[1],
+            ChatEvent::ToolCall(moon_core::ToolCall {
+                id: Some("call_x".into()),
+                name: "list_dir".into(),
+                arguments: serde_json::json!({}),
+            })
+        );
+        assert!(matches!(events[2], ChatEvent::Done(_)));
+        // arguments handed over as a string are parsed
+        assert_eq!(
+            wire::arguments_value(serde_json::json!("{\"path\": \"b.rs\"}")),
+            serde_json::json!({"path": "b.rs"})
+        );
+        assert_eq!(
+            wire::arguments_value(serde_json::Value::Null),
+            serde_json::json!({})
+        );
+        // the request carries the specs, the assistant's calls and the tool's name
+        let mut assistant = Message::assistant("");
+        assistant.tool_calls.push(moon_core::ToolCall {
+            id: None,
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "a.rs"}),
+        });
+        let req = ChatRequest {
+            model: "m".into(),
+            messages: vec![
+                Message::user("read a.rs"),
+                assistant,
+                Message::tool("read_file", None, "fn main() {}"),
+            ],
+            params: Default::default(),
+            tools: vec![moon_core::ToolSpec {
+                name: "read_file".into(),
+                description: "reads".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+        };
+        let body = serde_json::to_value(wire::ChatRequest::from_core(&req, None, None)).unwrap();
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["function"]["name"], "read_file");
+        assert!(body["messages"][0].get("tool_calls").is_none());
+        assert_eq!(
+            body["messages"][1]["tool_calls"][0]["function"]["arguments"]["path"],
+            "a.rs"
+        );
+        assert_eq!(body["messages"][2]["role"], "tool");
+        assert_eq!(body["messages"][2]["tool_name"], "read_file");
+        assert!(body["messages"][2].get("tool_call_id").is_none());
+        assert!(body["messages"][1]["tool_calls"][0].get("id").is_none());
+        let with_id = ChatRequest {
+            model: "m".into(),
+            messages: vec![Message::tool("list_dir", Some("call_x".into()), "src/")],
+            params: Default::default(),
+            tools: Vec::new(),
+        };
+        let body =
+            serde_json::to_value(wire::ChatRequest::from_core(&with_id, None, None)).unwrap();
+        assert_eq!(body["messages"][0]["tool_call_id"], "call_x");
+        // without tools the request is what it always was
+        let plain = ChatRequest {
+            model: "m".into(),
+            messages: vec![Message::user("hi")],
+            params: Default::default(),
+            tools: Vec::new(),
+        };
+        let body = serde_json::to_value(wire::ChatRequest::from_core(&plain, None, None)).unwrap();
+        assert!(body.get("tools").is_none());
     }
 
     #[tokio::test]
@@ -521,6 +616,7 @@ mod tests {
             model: "x".into(),
             messages: vec![Message::user("hello")],
             params: Default::default(),
+            tools: Vec::new(),
         };
         let events: Vec<_> = p
             .chat(req, CancellationToken::new())
@@ -536,6 +632,7 @@ mod tests {
             model: "nope".into(),
             messages: vec![],
             params: Default::default(),
+            tools: Vec::new(),
         };
         match p.chat(req, CancellationToken::new()).await {
             Err(ProviderError::ModelNotFound(m)) => assert_eq!(m, "nope"),

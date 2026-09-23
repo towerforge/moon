@@ -23,8 +23,25 @@ pub struct SessionMeta {
     /// Live attachments (the files panel), by path; re-read on resume.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<String>,
+    /// The model had the file tools when the conversation was last saved.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tools: bool,
+    /// …and could edit existing files, and create new ones. Written only
+    /// when off, so an older file, which had both, reads back the same.
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub tools_edit: bool,
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub tools_create: bool,
     #[serde(skip)]
     pub path: PathBuf,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_yes(b: &bool) -> bool {
+    *b
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,6 +116,9 @@ impl SessionStore {
             model,
             system_prompt,
             attachments: Vec::new(),
+            tools: false,
+            tools_edit: true,
+            tools_create: true,
             path: self.dir.join(name),
         };
         let mut f = fs::File::create(&meta.path).map_err(io_err(&meta.path))?;
@@ -302,6 +322,23 @@ mod tests {
         renamed.title = "other".into();
         store.update_meta(&renamed).unwrap();
         assert_eq!(store.latest().unwrap().unwrap().title, "other");
+
+        // the tools and their scope travel with the meta line
+        assert!(!s.meta.tools && s.meta.tools_edit && s.meta.tools_create);
+        let mut read_only = renamed.clone();
+        read_only.tools = true;
+        read_only.tools_edit = false;
+        read_only.tools_create = false;
+        store.update_meta(&read_only).unwrap();
+        let back = store.load(&meta.id).unwrap().meta;
+        assert!(back.tools && !back.tools_edit && !back.tools_create);
+        // a file from before the two boxes had both on
+        let old: SessionMeta = serde_json::from_str(
+            r#"{"id":"x","title":"t","created_at":"2026-01-01T00:00:00Z","tools":true}"#,
+        )
+        .unwrap();
+        assert!(old.tools && old.tools_edit && old.tools_create);
+        store.update_meta(&renamed).unwrap();
 
         store.rewrite(&renamed, &s.messages[..1]).unwrap();
         assert_eq!(store.load(&meta.id).unwrap().messages.len(), 1);

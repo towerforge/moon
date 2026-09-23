@@ -73,6 +73,11 @@ pub const SPECS: &[Spec] = &[
         help: "attached files: see what they cost, detach them and add more (also ctrl+f)",
     },
     Spec {
+        name: "tools",
+        args: "",
+        help: "the model using files: a panel to turn it on and off, decide whether it may only read, also edit or also create, and how many rounds a turn gets",
+    },
+    Spec {
         name: "context",
         args: "",
         help: "what the model sees: context file, attached files, token budget",
@@ -100,8 +105,11 @@ pub const KEYS: &[(&str, &str)] = &[
         "ctrl+j · alt+enter · shift+enter",
         "newline (shift+enter only with the kitty keyboard protocol)",
     ),
-    ("esc", "cancel the generation · close the panel"),
-    ("ctrl+c", "cancel; twice with an empty input, quit"),
+    ("ctrl+x", "clear everything written in the box"),
+    (
+        "esc · ctrl+c",
+        "cancel the generation · close the panel · clear the box (ctrl+c twice with an empty input quits)",
+    ),
     (
         "ctrl+d · del",
         "quit if the input is empty · in the sessions panel, delete the highlighted session",
@@ -120,6 +128,14 @@ pub const KEYS: &[(&str, &str)] = &[
         "files panel: what is attached, what it costs, and the tree to attach more",
     ),
     ("ctrl+s", "sessions panel: resume a saved conversation"),
+    (
+        "↑↓ · enter · s · esc",
+        "in the edit panel: choose apply or skip · confirm · skip · cancel the turn; pgup/pgdn scroll the diff",
+    ),
+    (
+        "↑↓ · enter · ←→ · esc",
+        "in the tools panel: move · tick the box under the cursor, or continue on the last row · change the number · cancel",
+    ),
     ("↑ · ↓", "prompt history (on the first / last line)"),
     ("pgup · pgdn · ctrl+↑ · ctrl+↓", "scroll the conversation"),
     (
@@ -153,6 +169,8 @@ pub enum Command {
     Retry,
     Undo,
     Files,
+    /// The model editing files: the panel that turns it on and tunes it.
+    Tools,
     Context,
     /// The machine drawn: cpu and ram over the window `sysmon` keeps.
     Machine,
@@ -190,6 +208,8 @@ pub fn parse(input: &str) -> Result<Command, String> {
         // `/add` and `/drop` were two commands with arguments; now they are
         // one panel, and the old names open it
         "files" | "attach" | "add" | "drop" => Command::Files,
+        // like `/model`, whatever follows is not a setting: the panel is
+        "tools" | "edit" | "edits" => Command::Tools,
         "context" | "ctx" => Command::Context,
         "machine" => Command::Machine,
         "help" | "?" => Command::Help,
@@ -245,6 +265,9 @@ mod tests {
         assert_eq!(parse("/resume"), Ok(Command::Sessions));
         assert!(parse("/models").is_err());
         assert_eq!(complete("q"), vec!["quit"]);
+        assert_eq!(parse("/tools"), Ok(Command::Tools));
+        assert_eq!(parse("/tools on"), Ok(Command::Tools));
+        assert_eq!(complete("to"), vec!["tools"]);
         // `/add` and `/drop` are gone as commands, but they still open the panel
         assert_eq!(parse("/add"), Ok(Command::Files));
         assert_eq!(parse("/drop"), Ok(Command::Files));

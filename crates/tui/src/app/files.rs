@@ -33,13 +33,21 @@ impl App {
     }
 
     pub(super) fn system_prompt_for(&self, live: &[Attachment]) -> Option<String> {
-        context::build_system_prompt(
+        let base = context::build_system_prompt(
             self.system_prompt.as_deref(),
             self.context_file
                 .as_ref()
                 .map(|(n, c)| (n.as_str(), c.as_str())),
             live,
-        )
+        );
+        // with the file tools on, the agent's rules come last
+        match (&self.harness, self.tools_on) {
+            (Some(h), true) => Some(match base {
+                Some(b) => format!("{b}\n\n{}", h.prompt()),
+                None => h.prompt().to_string(),
+            }),
+            _ => base,
+        }
     }
 
     /// Estimated tokens of what would travel in the next request.
@@ -425,6 +433,24 @@ impl App {
             )),
             None => lines.push("system prompt: (none)".into()),
         }
+        lines.push(match (&self.harness, self.tools_on) {
+            (Some(h), true) => format!(
+                "tools: {} · root {} · {}",
+                h.agent()
+                    .tools
+                    .iter()
+                    .map(|t| t.name())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                self.cwd,
+                if self.tools_write() {
+                    "every edit needs your ok"
+                } else {
+                    "read-only"
+                }
+            ),
+            _ => "tools: off · /tools turns them on".into(),
+        });
         let live = match self.read_live() {
             Ok(l) => l,
             Err(e) => {

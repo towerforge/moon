@@ -22,11 +22,11 @@
 
 - **Local first.** Talks to Ollama over its native API, so it knows what only Ollama can tell: context windows, quantization, which model is in memory and how much it takes. Any OpenAI-compatible server (LM Studio, llama.cpp, vLLM, OpenRouter…) plugs in with three lines of configuration.
 - **A real chat interface.** Streaming Markdown with syntax-highlighted code, a status line that shows what the model is doing, tokens sent and received, speed, and how much of the context window the conversation fills.
-- **Your files, your rules.** Attach a file or a line range with `@path`, keep files attached for the whole conversation from the files panel (`Ctrl+F`), and put a `MOON.md` in a project so the model knows what it is looking at. moon never runs tools or writes to disk on the model's behalf.
+- **Your files, your rules.** Attach a file or a line range with `@path`, keep files attached for the whole conversation from the files panel (`Ctrl+F`), and put a `MOON.md` in a project so the model knows what it is looking at. moon never runs commands on the model's behalf, and it writes to disk only when you turn edits on in the `/tools` panel: then the model can read and edit files under the directory you started in, nothing above it, and every edit is a diff you apply or skip.
 - **Sessions that survive.** Every conversation is saved as JSONL. Resume the last one, pick any from a list sorted by title — with the five you last opened on top once there are enough of them to be worth it — rename, delete, export to Markdown.
 - **Switch models mid-conversation.** A fuzzy list that unfolds at the bottom, grouped by provider, with your recent models on top once there are enough of them to be worth it. The history stays; the next question goes to the new model.
 - **The machine, always in view.** CPU and RAM in the corner, with the peak of the last three minutes, and the loaded model's footprint next to it. When a model spills to the CPU or to swap, you see it before you feel it.
-- **Scriptable.** `moon ask` streams a reply to stdout, reads the prompt from a pipe, and prints token stats to stderr.
+- **Scriptable.** `moon ask` streams a reply to stdout, reads the prompt from a pipe, and keeps everything else — the waiting star, token stats — on stderr, and only when there is a terminal watching.
 - **Fast, small, private.** One Rust binary. No telemetry, no network traffic except to the providers you configure: `moon update` goes to GitHub when you run it, and the start-up check stays off until you turn it on.
 
 ## Installation
@@ -209,6 +209,7 @@ Type `/` and the commands that match appear over the box, drawn like the panel: 
 | `/retry` | regenerate the last reply |
 | `/undo` | remove the last question/reply pair |
 | `/files` | attached files: see what they cost, detach them and add more (also `Ctrl+F`) |
+| `/tools` | the model using files: a panel to turn it on and off, decide whether it may only read, also edit or also create, and how many rounds a turn gets |
 | `/context` | what the model sees: context file, attached files, token budget, machine |
 | `/machine` | cpu, ram and swap drawn over the last 3 minutes |
 | `/help` | commands and keys, in a scrollable panel |
@@ -227,6 +228,8 @@ Type `/` and the commands that match appear over the box, drawn like the panel: 
 | `1`…`9` · `12` · `Alt+1`…`Alt+9` | in a list, go to the row with that number and open it; past the ninth it takes two digits, or `Enter` to settle for the row you are on; while you are typing a filter the digits belong to it, `Alt` always jumps |
 | `Ctrl+P` | model panel |
 | `Ctrl+S` | sessions panel |
+| `↑` · `↓` · `Enter` · `s` · `Esc` | in the edit panel: choose apply or skip · confirm · skip · cancel the turn; `PgUp` · `PgDn` scroll the diff |
+| `↑` · `↓` · `Enter` · `←` · `→` · `Esc` | in the tools panel: move · tick the box under the cursor, or continue on the last row · change the number · cancel |
 | `Ctrl+F` | files panel: what is attached, what it costs, and the tree to attach more |
 | `↑` · `↓` | prompt history (on the first / last line of the input) |
 | `PgUp` · `PgDn` · `Ctrl+↑` · `Ctrl+↓` | scroll the conversation |
@@ -246,6 +249,38 @@ The model only sees what you give it.
 - **`MOON.md`** in the directory you start from is loaded into the system prompt: what the model should know about the project without being told every time. The file name is configurable (`context_file`).
 - **Budget.** If the attachments would exceed 80 % of the model's context window, moon warns and does not send. `/context` shows every file with its token estimate and the size of the next request.
 - **Secrets.** Binaries and files that look like credentials (`.env`, private keys) are refused. `@!path` forces one through.
+
+### Editing files
+
+Writing is off until you ask for it, and with no configuration file at all moon is the chat client it has always been: the model only reads what you attach. A file written by `moon config init` turns reading on — `read_file` and `list_dir`, nothing that touches the disk. `/tools` opens a small panel under the conversation and changes all of it for this conversation:
+
+```
+ Let the model use files?                                      ~/Towerforge/moon
+ only under this directory · every edit is a diff you apply or skip · no shell
+
+ It gets read_file and list_dir; edit_file and write_file with the boxes below.
+ It cannot run commands, delete or rename files, or reach anything above this
+ directory.
+
+ ❯ Read files                                                             [✓]
+   Edit existing files                                                    [✓]
+   Create new files                                                       [✓]
+   Max steps per message                                                ◀ 8 ▶
+
+   the model can open and list files under this directory, and nothing more
+
+ ↑↓ move · enter tick · ←→ change · esc save
+```
+
+The first box is the switch: on, the model gets `read_file` and `list_dir` for this conversation, and the marker on the bottom row lists it: `⏵⏵ Read`. The second adds `edit_file`, the third `write_file`, each adding its own word to the marker (`⏵⏵ Read · Edit · Create` with both on). Editing and creating need reading, so ticking either ticks the first box too, and unticking the first box unticks all three: all off is tools off. Opened while off, every box starts off. Create without edit means create: `write_file` on a file that exists is refused, so the third box alone cannot replace a file whole. The number is how many times the model may use a tool for one message before it has to answer; then the turn stops. The muted line under the rows explains the one the cursor is on. `Enter` ticks the box under the cursor; `Esc` applies whatever is set and closes the panel. There is no cancel. The three boxes have their own settings under `[tools]` — `enabled`, `edit` and `create` — for the state every conversation starts in; `moon config init` writes reading on and both writing boxes off. There is no shell tool, so the model cannot run commands, tests or builds, and it cannot delete or rename files.
+
+- **Only forward, never back.** Paths are relative to the directory you started moon in and must stay under it: no `..`, no `~`, no absolute path outside it (one inside it, pasted from your editor, works), no symlink that leads outside. `.git/`, the files the secrets filter refuses (`.env`, keys) and the globs in `deny` are never touched. Every write goes through the same check, before and after touching the disk.
+- **Only with your ok.** A read or a listing runs on its own. An edit opens a panel under the conversation with the diff, and nothing is written until you press `Enter` on `Apply`; `s` skips it and tells the model so; `Esc` cancels the whole turn. There is no way to preapprove edits.
+- **What you see.** `⏵⏵ Read · Edit · Create` at the left of the bottom row while it is on, one word per box that is ticked (just `⏵⏵ Read` with both writing boxes off); one line per tool call in the conversation (`· read src/a.rs`, `✎ edit src/a.rs · +3 −1 · applied`); `waiting for your approval` in the status row while the panel is open. `/context` lists the tools and the root.
+- **What stops a model that loops.** At most eight rounds of tool calls per message, ten calls per reply and three refused paths per turn; then the turn stops and says why. An edit needs the file read first in the conversation, and fails if the file changed since.
+- **What it cannot protect you from.** The model can write a `Makefile`, a `build.rs` or a git hook that *you* will run later. That is why every edit is a diff in front of you, and why moon says so when the directory is not a git repository: it cannot undo what you apply, git can.
+
+The model needs tool support: with Ollama, `ollama show <model>` lists `tools` under capabilities when it has it (`qwen2.5-coder`, `llama3.1`, `qwen3`, `mistral-nemo` do); a model without it answers the request with an error. Some of them, `qwen2.5-coder` among them, write the call as JSON in the reply instead of a proper tool call; moon recognizes a reply that is nothing but a call and runs it all the same. The state travels with the session, so a resumed conversation comes back as it was.
 
 ### Sessions
 
@@ -273,6 +308,13 @@ moon ask "summarize @README.md"                # the same @path mentions as the 
 The `@path` mentions are expanded in the prompt you type, not in what comes
 down a pipe: piped text is content, and a diff or a log is full of `@@` and
 `@Annotation` tokens that are not paths.
+
+While it waits, `ask` turns the same star the TUI uses, with `thinking…` or
+`loading model…` next to it and the seconds gone by — a local model that is not
+in memory yet can take ten of them before the first token. It goes to stderr,
+and only when stderr is a terminal, so `moon ask … > file` and `… | grep` get
+the reply and nothing else; it is erased before the first token is printed, and
+`NO_COLOR` drops the colour.
 
 ```sh
 moon -m ollama/qwen2.5-coder:14b               # start with this model
@@ -323,6 +365,13 @@ type       = "ollama"
 base_url   = "http://localhost:11434"   # or the OLLAMA_HOST variable
 think      = false                      # ask for reasoning from models that support it
 keep_alive = "5m"                       # how long Ollama keeps the model loaded
+
+[tools]                       # the model using files: /tools opens the panel that changes it for one conversation
+enabled        = true         # Read files: read_file and list_dir at startup
+edit           = false        # Edit existing files: adds edit_file
+create         = false        # Create new files: adds write_file
+max_file_bytes = 200000       # bigger files are neither read nor edited
+deny           = [".github/workflows/**"]   # never touched, on top of .git/ and the secrets filter
 
 [theme.overrides]             # any of the ten Moon tokens, as hex
 moon      = "#8fb8ff"
@@ -396,7 +445,7 @@ Drop a `MOON.md` in a project and start moon there. Its content goes into the sy
 
 **The wheel changes my prompt instead of scrolling.** That happens with `mouse = false`: in the alternate screen the terminal turns wheel events into arrow keys, and arrows walk the prompt history. Leave mouse capture on and hold `Shift` when you want the terminal's own text selection.
 
-**Does moon edit files or run commands?** No. It reads what you attach and nothing else. Tool use is deliberately out of scope for now.
+**Does moon edit files or run commands?** Commands, never: there is no shell tool to turn on. Files, only when you say so: the `/tools` panel lets the model read and edit files under the directory you started in, and every edit is a diff you apply or skip. Off by default, and off again from the same panel. See [Editing files](#editing-files).
 
 **Where does the model size come from?** From Ollama's `/api/ps`: the loaded footprint, how much of it sits in the GPU, the context length it was loaded with and when it will be unloaded. Other providers do not expose this, so the row shows only the machine readings with them.
 

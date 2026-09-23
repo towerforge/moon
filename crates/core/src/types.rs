@@ -47,6 +47,15 @@ pub struct Message {
     /// Files attached with `@path` (snapshots; only on user messages).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Attachment>,
+    /// Tools the model asked for (only on assistant messages).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
+    /// Which tool this message answers (only on tool messages).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// The call it answers, when the provider gave the call an id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl Message {
@@ -60,6 +69,9 @@ impl Message {
             thinking: None,
             partial: false,
             attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_name: None,
+            tool_call_id: None,
         }
     }
 
@@ -83,6 +95,18 @@ impl Message {
 
     pub fn assistant(content: impl Into<String>) -> Self {
         Self::new(Role::Assistant, content)
+    }
+
+    /// What a tool returned, for the model to read on the next request.
+    pub fn tool(
+        name: impl Into<String>,
+        call_id: Option<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        let mut m = Self::new(Role::Tool, content);
+        m.tool_name = Some(name.into());
+        m.tool_call_id = call_id;
+        m
     }
 }
 
@@ -161,15 +185,30 @@ pub struct GenerationParams {
     pub extra: BTreeMap<String, toml::Value>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<Message>,
     pub params: GenerationParams,
+    /// Tools the model may call. Empty: none are offered, as before tools existed.
+    pub tools: Vec<ToolSpec>,
 }
 
+/// A tool as the model sees it: a name, what it is for and the JSON schema
+/// of its arguments. The providers wrap it in their own envelope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+/// A call the model made. Ollama gives calls no id; the OpenAI API does and
+/// wants it back on the tool message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolCall {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub name: String,
     pub arguments: serde_json::Value,
 }
@@ -256,6 +295,30 @@ mod tests {
         assert_eq!(m.cpu_percent(), 100);
         // an unknown size does not divide by zero
         assert_eq!(loaded(0, 0).cpu_percent(), 0);
+    }
+
+    #[test]
+    fn tool_fields_round_trip_and_old_records_still_load() {
+        let mut m = Message::assistant("");
+        m.tool_calls.push(ToolCall {
+            id: Some("c1".into()),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "a.rs"}),
+        });
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains("\"tool_calls\""));
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, m);
+        let t = Message::tool("read_file", Some("c1".into()), "ok");
+        assert_eq!(t.role, Role::Tool);
+        assert_eq!(t.tool_name.as_deref(), Some("read_file"));
+        // a message written before tools existed has none of the fields
+        let old: Message =
+            serde_json::from_str(r#"{"role":"user","content":"hi","ts":"2026-01-01T00:00:00Z"}"#)
+                .unwrap();
+        assert!(old.tool_calls.is_empty());
+        assert!(old.tool_name.is_none());
+        assert!(!serde_json::to_string(&old).unwrap().contains("tool"));
     }
 
     #[test]

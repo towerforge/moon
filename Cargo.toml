@@ -4,6 +4,7 @@ members = [
     "crates/core",
     "crates/providers/ollama",
     "crates/providers/openai",
+    "crates/agent",
     "crates/tui",
     "crates/updater",
     "crates/cli",
@@ -20,6 +21,7 @@ repository   = "https://github.com/towerforge/moon"
 moon-core            = { path = "crates/core" }
 moon-provider-ollama = { path = "crates/providers/ollama" }
 moon-provider-openai = { path = "crates/providers/openai" }
+moon-agent           = { path = "crates/agent" }
 moon-tui             = { path = "crates/tui" }
 moon-updater         = { path = "crates/updater" }
 
@@ -47,6 +49,7 @@ uuid               = { version = "1", features = ["v4"] }
 pulldown-cmark     = { version = "0.13", default-features = false }
 syntect            = { version = "5", default-features = false, features = ["parsing", "default-syntaxes", "regex-fancy", "dump-load"] }
 nucleo-matcher     = "0.3"
+similar            = "2"
 unicode-width      = "0.2"
 arboard            = { version = "3", default-features = false }
 base64             = "0.22"

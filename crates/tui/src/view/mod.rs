@@ -6,12 +6,15 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::Frame;
 
-use crate::app::{App, Choice, HelpState, HelpTab, Panel, SessionAction};
+use crate::app::{
+    App, Approval, Choice, EditChoice, HelpState, HelpTab, Panel, SessionAction, ToolsDialog,
+};
 use crate::commands::{KEYS, SPECS};
 use crate::picker::{Picker, PickerGroup, Row};
 use crate::theme::Theme;
 use crate::wrap::{truncate, width, wrap_line};
 
+mod diff;
 mod machine;
 mod panel;
 #[cfg(test)]
@@ -274,8 +277,8 @@ fn render_status(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// Bottom row: the hints on the left; on the right, the active model and,
-/// if they fit, the machine readings.
+/// Bottom row: the edit-mode sign and the hints on the left; on the right,
+/// the active model and, if they fit, the machine readings.
 fn render_hints(app: &App, frame: &mut Frame, area: Rect) {
     let t = &app.theme;
     let mut right = app.model_spans();
@@ -288,10 +291,13 @@ fn render_hints(app: &App, frame: &mut Frame, area: Rect) {
     }
     let right_w: usize = right.iter().map(|s| width(&s.content)).sum();
     let avail = area.width as usize;
-    let left = truncate_spans(
-        vec![Span::styled(app.hints(), t.muted())],
-        avail.saturating_sub(right_w + 2),
-    );
+    let mut left_spans = vec![Span::raw(" ")];
+    if let Some(mode) = app.edit_mode_span() {
+        left_spans.push(mode);
+        left_spans.push(Span::styled(" · ", t.muted()));
+    }
+    left_spans.push(Span::styled(app.hints().trim_start(), t.muted()));
+    let left = truncate_spans(left_spans, avail.saturating_sub(right_w + 2));
     let left_w: usize = left.iter().map(|s| width(&s.content)).sum();
     let mut spans = left;
     spans.push(Span::raw(

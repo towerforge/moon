@@ -13,6 +13,7 @@ clipboard = ["dep:arboard"]
 
 [dependencies]
 moon-core      = { workspace = true }
+moon-agent     = { workspace = true }
 moon-updater   = { workspace = true }
 anyhow         = { workspace = true }
 arboard        = { workspace = true, optional = true }
@@ -31,4 +32,6 @@ tracing        = { workspace = true }
 unicode-width  = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
+async-trait = { workspace = true }
+serde_json  = { workspace = true }
+tempfile    = { workspace = true }

@@ -127,33 +127,29 @@ impl App {
                 }
             }
             Command::Retry => {
-                if self.is_streaming() {
+                if self.turn_active() {
                     self.cancel_generation();
                 }
-                self.drop_trailing_non_messages();
-                if matches!(self.items.last(), Some(Item::Message(m)) if m.role == Role::Assistant)
-                {
-                    self.pop_item();
+                // everything the last question brought: the reply, and with
+                // tools the calls, their results and the step lines
+                if self.pop_to_last_request() > 0 {
                     self.rewrite_session();
                 }
                 if matches!(self.items.last(), Some(Item::Message(m)) if m.role == Role::User) {
                     self.follow = true;
+                    if let Some(h) = self.harness.as_mut() {
+                        h.begin_turn();
+                    }
                     self.start_generation(tx);
                 } else {
                     self.notify("nothing to retry");
                 }
             }
             Command::Undo => {
-                if self.is_streaming() {
+                if self.turn_active() {
                     self.cancel_generation();
                 }
-                self.drop_trailing_non_messages();
-                let mut removed = 0;
-                if matches!(self.items.last(), Some(Item::Message(m)) if m.role == Role::Assistant)
-                {
-                    self.pop_item();
-                    removed += 1;
-                }
+                let mut removed = self.pop_to_last_request();
                 if matches!(self.items.last(), Some(Item::Message(m)) if m.role == Role::User) {
                     self.pop_item();
                     removed += 1;
@@ -167,6 +163,7 @@ impl App {
                 }
             }
             Command::Files => self.open_files_panel(),
+            Command::Tools => self.open_tools_dialog(),
             Command::Context => self.show_context(),
             Command::Machine => self.panel = Some(Panel::Machine),
             Command::Help => self.panel = Some(Panel::Help(HelpState::default())),
@@ -177,10 +174,27 @@ impl App {
     pub(super) fn drop_trailing_non_messages(&mut self) {
         while matches!(
             self.items.last(),
-            Some(Item::Error(_)) | Some(Item::Info(_))
+            Some(Item::Error(_)) | Some(Item::Info(_)) | Some(Item::Step(_))
         ) {
             self.pop_item();
         }
+    }
+
+    /// Removes everything after the last user message: replies, tool calls
+    /// and results, step lines, notices. Returns how many messages went.
+    pub(super) fn pop_to_last_request(&mut self) -> usize {
+        let mut removed = 0;
+        loop {
+            self.drop_trailing_non_messages();
+            match self.items.last() {
+                Some(Item::Message(m)) if m.role != Role::User => {
+                    self.pop_item();
+                    removed += 1;
+                }
+                _ => break,
+            }
+        }
+        removed
     }
 
     pub(super) fn export(&mut self, path: Option<String>) {
@@ -196,6 +210,9 @@ impl App {
             model: self.current.as_ref().map(|c| c.qualified()),
             system_prompt: self.system_prompt.clone(),
             attachments: self.live.iter().map(|s| s.to_string()).collect(),
+            tools: self.tools_on,
+            tools_edit: self.tools_scope().0,
+            tools_create: self.tools_scope().1,
             path: Default::default(),
         });
         let path = path.unwrap_or_else(|| {

@@ -8,7 +8,7 @@ pub(super) fn app() -> (App, Tx, mpsc::UnboundedReceiver<Action>) {
     let (tx, rx) = mpsc::unbounded_channel();
     let app = App::new(RunOptions {
         config: Config::default(),
-        config_source: ConfigSource::Default,
+        config_source: ConfigSource::Default(PathBuf::from("/config.toml")),
         registry: Arc::new(Registry::new()),
         store: None,
         resume: None,
@@ -58,6 +58,32 @@ fn sampling_runs_fast_while_the_model_works() {
     app.panel = None;
     app.update(Action::Tick, &tx);
     assert!(!app.sys_pace.is_fast());
+}
+
+#[test]
+fn config_note_says_where_the_file_is() {
+    let (app, _tx, _rx) = app();
+    // `app()` starts with no file: says where `moon config init` would write one
+    assert_eq!(
+        app.config_note(),
+        "not written yet; `moon config init` writes one at /config.toml"
+    );
+    let loaded = App::new(RunOptions {
+        config: Config::default(),
+        config_source: ConfigSource::File(PathBuf::from("/x/config.toml")),
+        registry: Arc::new(Registry::new()),
+        store: None,
+        resume: None,
+        model: None,
+        version: "0.0.0".into(),
+        cwd: "~/x".into(),
+        root: std::env::temp_dir(),
+        state_dir: None,
+    });
+    assert_eq!(
+        loaded.config_note(),
+        "read from /x/config.toml; edit it directly, or `moon config init --force` to reset it"
+    );
 }
 
 #[tokio::test]

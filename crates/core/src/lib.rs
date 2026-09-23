@@ -13,7 +13,7 @@ pub mod registry;
 pub mod session;
 pub mod types;
 
-pub use config::{Config, ConfigSource, GeneralConfig, ProviderConfig, ThemeConfig};
+pub use config::{Config, ConfigSource, GeneralConfig, ProviderConfig, ThemeConfig, ToolsConfig};
 pub use context::{Attachment, Spec};
 pub use error::{ConfigError, ProviderError, SessionError};
 pub use paths::Paths;
@@ -22,5 +22,5 @@ pub use registry::Registry;
 pub use session::{Session, SessionMeta, SessionStore};
 pub use types::{
     Capabilities, ChatEvent, ChatRequest, GenerationParams, Health, LoadedModel, Message,
-    ModelInfo, Role, ToolCall, Usage,
+    ModelInfo, Role, ToolCall, ToolSpec, Usage,
 };

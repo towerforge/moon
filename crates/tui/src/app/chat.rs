@@ -29,7 +29,7 @@ impl App {
     }
 
     pub(super) fn send_message(&mut self, text: String, tx: &Tx) {
-        if self.is_streaming() {
+        if self.turn_active() {
             self.notify("wait for the reply to finish, or press esc to cancel it");
             self.input.set_text(&text);
             return;
@@ -70,6 +70,10 @@ impl App {
         self.persist(&msg);
         self.push_item(Item::Message(msg));
         self.follow = true;
+        // a new turn for the loop: its counters start over
+        if let Some(h) = self.harness.as_mut() {
+            h.begin_turn();
+        }
         self.start_generation(tx);
     }
 
@@ -83,6 +87,9 @@ impl App {
             Ok(meta) => {
                 self.touch_session(&meta.id);
                 self.session = Some(meta);
+                if self.tools_on {
+                    self.update_session_meta();
+                }
             }
             Err(e) => self.notify(format!("could not create the session: {e}")),
         }
@@ -108,12 +115,15 @@ impl App {
     }
 
     pub(super) fn update_session_meta(&mut self) {
+        let (edit, create) = self.tools_scope();
         let (Some(store), Some(meta)) = (&self.store, &mut self.session) else {
             return;
         };
         meta.model = self.current.as_ref().map(|c| c.qualified());
         meta.system_prompt = self.system_prompt.clone();
         meta.attachments = self.live.iter().map(|s| s.to_string()).collect();
+        meta.tools = self.tools_on;
+        (meta.tools_edit, meta.tools_create) = (edit, create);
         if let Err(e) = store.update_meta(meta) {
             tracing::warn!(error = %e, "could not update the session");
         }
@@ -128,12 +138,14 @@ impl App {
                 "provider unavailable: {}",
                 cur.provider
             )));
+            self.abort_turn();
             return;
         };
         let live = match self.read_live() {
             Ok(l) => l,
             Err(e) => {
                 self.push_item(Item::Error(e));
+                self.abort_turn();
                 return;
             }
         };
@@ -143,17 +155,30 @@ impl App {
         }
         messages.extend(
             self.messages()
-                .filter(|m| !m.content.is_empty() || !m.attachments.is_empty())
+                .filter(|m| {
+                    !m.content.is_empty()
+                        || !m.attachments.is_empty()
+                        || !m.tool_calls.is_empty()
+                        || m.role == Role::Tool
+                })
                 .map(|m| {
                     let mut w = Message::new(m.role, m.content.clone());
                     w.attachments = m.attachments.clone();
+                    w.tool_calls = m.tool_calls.clone();
+                    w.tool_name = m.tool_name.clone();
+                    w.tool_call_id = m.tool_call_id.clone();
                     w
                 }),
         );
+        let tools = match (&self.harness, self.tools_on) {
+            (Some(h), true) => h.specs(),
+            _ => Vec::new(),
+        };
         let req = ChatRequest {
             model: cur.model.clone(),
             messages,
             params: self.params.clone(),
+            tools,
         };
         self.last_run = None;
         let sent = self.estimated_request_tokens("", &[], &live);
@@ -181,7 +206,7 @@ impl App {
                 match ev {
                     Ok(ChatEvent::Delta(d)) => send(StreamEvent::Delta(d)),
                     Ok(ChatEvent::Thinking(t)) => send(StreamEvent::Thinking(t)),
-                    Ok(ChatEvent::ToolCall(_)) => {}
+                    Ok(ChatEvent::ToolCall(c)) => send(StreamEvent::ToolCall(c)),
                     Ok(ChatEvent::Done(u)) => return send(StreamEvent::Done(u)),
                     Err(ProviderError::Cancelled) => return send(StreamEvent::Cancelled),
                     Err(e) => return send(StreamEvent::Error(e.to_string())),
@@ -206,7 +231,7 @@ impl App {
         }
     }
 
-    pub(super) fn on_stream(&mut self, ev: StreamEvent) {
+    pub(super) fn on_stream(&mut self, ev: StreamEvent, tx: &Tx) {
         match ev {
             StreamEvent::Delta(d) => {
                 if let Generation::Streaming {
@@ -227,11 +252,24 @@ impl App {
                     .get_or_insert_with(String::new)
                     .push_str(&t);
             }
-            StreamEvent::Done(usage) => self.finish_generation(Some(usage), false),
-            StreamEvent::Cancelled => self.finish_generation(None, true),
+            StreamEvent::ToolCall(c) => {
+                if let Generation::Streaming { first_at, .. } = &mut self.gen {
+                    first_at.get_or_insert_with(Instant::now);
+                }
+                self.streaming_message().tool_calls.push(c);
+            }
+            StreamEvent::Done(usage) => {
+                self.finish_generation(Some(usage), false);
+                self.after_reply(tx);
+            }
+            StreamEvent::Cancelled => {
+                self.finish_generation(None, true);
+                self.abort_turn();
+            }
             StreamEvent::Error(e) => {
                 self.finish_generation(None, false);
                 self.push_item(Item::Error(e));
+                self.abort_turn();
             }
         }
     }
@@ -272,7 +310,7 @@ impl App {
             }
             return;
         }
-        let empty = matches!(self.items.last(), Some(Item::Message(m)) if m.content.is_empty() && m.thinking.is_none());
+        let empty = matches!(self.items.last(), Some(Item::Message(m)) if m.content.is_empty() && m.thinking.is_none() && m.tool_calls.is_empty());
         if empty {
             self.pop_item();
             if !cancelled && usage.is_some() {
@@ -307,5 +345,6 @@ impl App {
             self.gen_id += 1; // ignore whatever arrives late
             self.finish_generation(None, true);
         }
+        self.abort_turn();
     }
 }

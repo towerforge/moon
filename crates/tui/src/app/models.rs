@@ -56,6 +56,7 @@ impl App {
             .find(|m| m.provider == provider && m.id == model)
             .and_then(|m| m.context_length);
         self.current = Some(Current { provider, model });
+        self.caps = None;
         self.loaded = LoadedState::Unknown;
         push_recent(&mut self.recent, &q);
         save_recent(self.recent_file.as_deref(), &self.recent);
@@ -191,8 +192,18 @@ impl App {
                     model: m,
                 });
                 self.ctx_len = None;
+                self.caps = None;
                 self.loaded = LoadedState::Unknown;
             }
+        }
+        // the conversation had the file tools: back on, unless they are
+        if s.meta.tools && !self.tools_on {
+            if let Err(e) = self.enable_tools() {
+                self.notify(e);
+            }
+        }
+        if s.meta.tools && self.tools_on {
+            self.set_tools_scope(s.meta.tools_edit, s.meta.tools_create);
         }
         self.live = s
             .meta

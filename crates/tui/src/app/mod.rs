@@ -9,8 +9,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use moon_core::session::{export_markdown, title_from};
 use moon_core::{
-    params, ChatEvent, ChatRequest, Config, ConfigSource, GenerationParams, Health, LoadedModel,
-    Message, ModelInfo, ProviderError, Registry, Role, Session, SessionMeta, SessionStore, Usage,
+    params, Capabilities, ChatEvent, ChatRequest, Config, ConfigSource, GenerationParams, Health,
+    LoadedModel, Message, ModelInfo, ProviderError, Registry, Role, Session, SessionMeta,
+    SessionStore, ToolCall, Usage,
 };
 use ratatui::text::{Line, Span};
 use tokio::sync::mpsc;
@@ -25,6 +26,7 @@ use crate::theme::Theme;
 use crate::wrap::{pad_line, wrap_line};
 use moon_core::context::{self, Attachment, Spec};
 
+mod agent;
 mod chat;
 mod files;
 mod keys;
@@ -35,7 +37,11 @@ mod status;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_agent;
+#[cfg(test)]
 mod tests_context;
+
+pub use agent::{Approval, EditChoice, ToolsDialog};
 
 pub type Tx = mpsc::UnboundedSender<Action>;
 
@@ -74,6 +80,9 @@ pub enum Action {
 pub enum StreamEvent {
     Delta(String),
     Thinking(String),
+    /// The model asked for a tool; gathered on the reply, handed to the
+    /// harness once the reply is done.
+    ToolCall(ToolCall),
     Done(Usage),
     Cancelled,
     Error(String),
@@ -84,6 +93,8 @@ pub enum Item {
     Message(Message),
     Error(String),
     Info(String),
+    /// What a tool did, one line: `· read src/a.rs`, `✎ edit src/a.rs · +3 −1 · applied`.
+    Step(moon_agent::Step),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,6 +171,11 @@ pub enum Panel {
         picker: Box<Picker>,
         action: SessionAction,
     },
+    /// An edit the model asked for, waiting for the user: the diff and the
+    /// two choices. The turn is paused underneath.
+    Approval(Box<Approval>),
+    /// `/tools`: whether the model may edit files, and how far.
+    Tools(ToolsDialog),
 }
 
 impl Panel {
@@ -169,7 +185,11 @@ impl Panel {
         match self {
             Panel::Models(p) | Panel::Sessions(p) | Panel::Files(p) => Some(p),
             Panel::Browse { picker, .. } => Some(picker),
-            Panel::Help(_) | Panel::Machine | Panel::SessionAction { .. } => None,
+            Panel::Help(_)
+            | Panel::Machine
+            | Panel::SessionAction { .. }
+            | Panel::Approval(_)
+            | Panel::Tools(_) => None,
         }
     }
 
@@ -177,7 +197,11 @@ impl Panel {
         match self {
             Panel::Models(p) | Panel::Sessions(p) | Panel::Files(p) => Some(p),
             Panel::Browse { picker, .. } => Some(picker),
-            Panel::Help(_) | Panel::Machine | Panel::SessionAction { .. } => None,
+            Panel::Help(_)
+            | Panel::Machine
+            | Panel::SessionAction { .. }
+            | Panel::Approval(_)
+            | Panel::Tools(_) => None,
         }
     }
 }
@@ -367,6 +391,8 @@ pub struct App {
     pub cwd: String,
     root: PathBuf,
     default_config: bool,
+    /// Where the configuration lives, or would once `moon config init` wrote it.
+    cfg_path: PathBuf,
     /// Live attachments from the files panel: re-read on every send.
     pub(crate) live: Vec<Spec>,
     /// Project context file (name, contents), if any.
@@ -378,6 +404,8 @@ pub struct App {
     pub system_prompt: Option<String>,
     pub params: GenerationParams,
     pub current: Option<Current>,
+    /// What the provider said the active model can do, once it has answered.
+    pub caps: Option<Capabilities>,
     default_provider: Option<String>,
     pub models: Vec<ModelInfo>,
     pub providers: Vec<ProviderState>,
@@ -429,6 +457,11 @@ pub struct App {
     sys_pace: crate::sysmon::Pace,
     /// Whether the provider has the active model loaded, and how much it takes.
     pub loaded: LoadedState,
+    /// The model may read and edit files under the root, each edit with
+    /// the user's ok. The `/tools` panel, or `[tools] enabled`.
+    pub tools_on: bool,
+    /// The loop behind `tools_on`; built when it is turned on.
+    pub(crate) harness: Option<moon_agent::Harness>,
 
     md: Renderer,
     cache: Vec<Option<Rendered>>,
@@ -511,13 +544,15 @@ impl App {
             root: opts.root,
             live: Vec::new(),
             context_file: None,
-            default_config: opts.config_source == ConfigSource::Default,
+            default_config: matches!(opts.config_source, ConfigSource::Default(_)),
+            cfg_path: opts.config_source.path().to_path_buf(),
             session: None,
             items: Vec::new(),
             view_from: 0,
             system_prompt: opts.config.general.system_prompt.clone(),
             params: opts.config.params.clone(),
             current: None,
+            caps: None,
             default_provider: None,
             models: Vec::new(),
             providers,
@@ -556,6 +591,8 @@ impl App {
             sys: crate::sysmon::History::default(),
             sys_pace: crate::sysmon::Pace::default(),
             loaded: LoadedState::default(),
+            tools_on: false,
+            harness: None,
             md: Renderer::new(),
             cache: Vec::new(),
             cfg: opts.config,
@@ -584,6 +621,11 @@ impl App {
             }
         }
         app.load_context_file();
+        if app.cfg.tools.enabled {
+            if let Err(e) = app.enable_tools() {
+                app.items.push(Item::Error(e));
+            }
+        }
         if let Some(id) = opts.resume {
             app.resume(&id);
         }
@@ -737,7 +779,7 @@ impl App {
     // ----- update -----------------------------------------------------------
 
     pub fn needs_tick(&self) -> bool {
-        self.is_streaming() || self.loading || self.notice.is_some()
+        self.is_streaming() || self.loading || self.notice.is_some() || self.waiting_approval()
     }
 
     pub fn is_streaming(&self) -> bool {
@@ -799,7 +841,8 @@ impl App {
             }
             Action::ScrollBy(d) => match self.panel.as_mut() {
                 Some(Panel::Help(h)) => h.scroll_by(d),
-                Some(Panel::SessionAction { .. }) => {}
+                Some(Panel::Approval(a)) => a.scroll_by(d),
+                Some(Panel::SessionAction { .. }) | Some(Panel::Tools(_)) => {}
                 // in the lists the wheel moves the cursor one at a time
                 Some(panel) => {
                     if let Some(p) = panel.picker_mut() {
@@ -836,6 +879,7 @@ impl App {
                     .is_some_and(|c| c.provider == info.provider && c.model == info.id)
                 {
                     self.ctx_len = info.context_length;
+                    self.caps = Some(info.caps);
                     if let Some(m) = self
                         .models
                         .iter_mut()
@@ -848,7 +892,7 @@ impl App {
             }
             Action::Stream(id, ev) => {
                 if id == self.gen_id {
-                    self.on_stream(ev);
+                    self.on_stream(ev, tx);
                 }
             }
             Action::SessionLoaded(s) => {

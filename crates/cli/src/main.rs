@@ -4,6 +4,7 @@
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
 use clap::{Parser, Subcommand};
@@ -238,9 +239,7 @@ fn config_cmd(action: &ConfigCmd, path: &std::path::Path, paths: &Paths) -> anyh
         ConfigCmd::Show => {
             let (cfg, source) = Config::load_or_default(path)?;
             match source {
-                ConfigSource::Default => {
-                    println!("# no file at {}: defaults", path.display())
-                }
+                ConfigSource::Default(p) => println!("# no file at {}: defaults", p.display()),
                 ConfigSource::File(p) => println!("# {}", p.display()),
             }
             print!("{}", cfg.to_toml());
@@ -269,6 +268,93 @@ async fn pick_model(
         tracing::debug!(provider = %id, "no models");
     }
     bail!("no provider has models: is Ollama running?")
+}
+
+/// The star of the TUI, for the wait of `moon ask`: nothing has come back yet
+/// and a local model can take seconds to load. It turns on **stderr**, and
+/// only when stderr is a terminal, so a pipe still gets the reply and nothing
+/// else. Erased before the first token is printed.
+struct Waiting {
+    start: std::time::Instant,
+    frame: usize,
+    /// stderr is a terminal: there is someone watching.
+    on: bool,
+    /// …and colour was not turned off.
+    colour: bool,
+    drawn: bool,
+    /// The model has sent reasoning: it is thinking, not loading.
+    thinking: bool,
+}
+
+impl Waiting {
+    fn new() -> Self {
+        let on = std::io::stderr().is_terminal();
+        Self {
+            start: std::time::Instant::now(),
+            frame: 0,
+            on,
+            colour: on && std::env::var_os("NO_COLOR").is_none(),
+            drawn: false,
+            thinking: false,
+        }
+    }
+
+    /// `moon` for the star, `ink-muted` for the words, as in the TUI. Empty
+    /// when the terminal says nothing about colour.
+    fn paint(&self, token: &str) -> String {
+        if !self.colour {
+            return String::new();
+        }
+        let Some((_, hex, idx)) = moon_tui::theme::TOKENS.iter().find(|(n, _, _)| *n == token)
+        else {
+            return String::new();
+        };
+        if !moon_tui::Theme::truecolor_supported() {
+            return format!("\x1b[38;5;{idx}m");
+        }
+        match u32::from_str_radix(hex.trim_start_matches('#'), 16) {
+            Ok(v) => format!(
+                "\x1b[38;2;{};{};{}m",
+                (v >> 16) & 0xff,
+                (v >> 8) & 0xff,
+                v & 0xff
+            ),
+            Err(_) => String::new(),
+        }
+    }
+
+    fn tick(&mut self) {
+        if !self.on {
+            return;
+        }
+        let frames = moon_tui::app::SPINNER;
+        let star = frames[self.frame % frames.len()];
+        self.frame += 1;
+        // the same two words the TUI uses while it waits for the first
+        // token, except that here reasoning tokens settle which one it is
+        // instead of the 1.5 s guess
+        let verb = match self.start.elapsed() > Duration::from_millis(1500) && !self.thinking {
+            true => "loading model…",
+            false => "thinking…",
+        };
+        let (moon, muted) = (self.paint("moon"), self.paint("ink-muted"));
+        let off = if self.colour { "\x1b[0m" } else { "" };
+        eprint!(
+            "\r\x1b[2K{moon}{star}{off} {muted}{verb} ({}){off}",
+            moon_tui::app::fmt_dur(self.start.elapsed())
+        );
+        let _ = std::io::stderr().flush();
+        self.drawn = true;
+    }
+
+    /// Takes the line back before anything else is written.
+    fn clear(&mut self) {
+        if self.on && self.drawn {
+            eprint!("\r\x1b[2K");
+            let _ = std::io::stderr().flush();
+            self.drawn = false;
+        }
+    }
 }
 
 async fn ask(
@@ -326,6 +412,7 @@ async fn ask(
         model: model.clone(),
         messages,
         params: cfg.params.clone(),
+        tools: Vec::new(),
     };
     let cancel = CancellationToken::new();
     let c2 = cancel.clone();
@@ -334,21 +421,55 @@ async fn ask(
             c2.cancel();
         }
     });
-    let mut stream = provider
-        .chat(req, cancel)
-        .await
-        .map_err(|e| anyhow!("{}/{}: {e}", provider.id(), model))?;
+    let mut waiting = Waiting::new();
+    // a first turn late enough that a quick answer never makes the star blink
+    let mut ticker = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_millis(250),
+        moon_tui::app::TICK,
+    );
+    // the star has to turn here too, not only over the stream: with a model
+    // that is not in memory, Ollama holds the response until it has loaded
+    // it, and that await is most of the silence
+    let chat = provider.chat(req, cancel);
+    tokio::pin!(chat);
+    let mut stream = loop {
+        tokio::select! {
+            opened = &mut chat => match opened {
+                Ok(s) => break s,
+                Err(e) => {
+                    waiting.clear();
+                    return Err(anyhow!("{}/{}: {e}", provider.id(), model));
+                }
+            },
+            _ = ticker.tick() => waiting.tick(),
+        }
+    };
     let mut out = std::io::stdout();
     let mut printed = false;
-    while let Some(ev) = stream.next().await {
+    loop {
+        let ev = tokio::select! {
+            ev = stream.next() => match ev {
+                Some(ev) => ev,
+                None => break,
+            },
+            _ = ticker.tick(), if !printed => {
+                waiting.tick();
+                continue;
+            }
+        };
         match ev {
             Ok(ChatEvent::Delta(d)) => {
+                waiting.clear();
                 out.write_all(d.as_bytes())?;
                 out.flush()?;
                 printed = true;
             }
-            Ok(ChatEvent::Thinking(_)) | Ok(ChatEvent::ToolCall(_)) => {}
+            // the reasoning itself is not printed: it is not the answer, and
+            // stdout belongs to whoever is reading it
+            Ok(ChatEvent::Thinking(_)) => waiting.thinking = true,
+            Ok(ChatEvent::ToolCall(_)) => {}
             Ok(ChatEvent::Done(u)) => {
+                waiting.clear();
                 if printed {
                     println!();
                 }
@@ -365,6 +486,7 @@ async fn ask(
                 return Ok(());
             }
             Err(moon_core::ProviderError::Cancelled) => {
+                waiting.clear();
                 if printed {
                     println!();
                 }
@@ -372,6 +494,7 @@ async fn ask(
                 std::process::exit(130);
             }
             Err(e) => {
+                waiting.clear();
                 if printed {
                     println!();
                 }
@@ -379,6 +502,7 @@ async fn ask(
             }
         }
     }
+    waiting.clear();
     if printed {
         println!();
     }

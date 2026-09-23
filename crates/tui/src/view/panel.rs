@@ -25,7 +25,7 @@ fn list_body(area: Rect) -> usize {
 fn help_body(app: &App, h: &HelpState, area: Rect) -> usize {
     let max = (area.height as usize * 2 / 3).max(MIN_BODY);
     let body_w = area.width.saturating_sub(2) as usize;
-    help_lines(&app.theme, h.tab, body_w)
+    help_lines(app, &app.theme, h.tab, body_w)
         .len()
         .clamp(MIN_BODY, max)
 }
@@ -44,6 +44,8 @@ pub(super) fn height(app: &App, area: Rect) -> u16 {
             SessionAction::Delete { .. } => 2,
             SessionAction::Rename { .. } => 1,
         },
+        Panel::Approval(a) => a.edit.diff.lines.len().clamp(1, list_body(area)),
+        Panel::Tools(d) => tools_lines(&app.theme, d, area.width.saturating_sub(2) as usize).len(),
     };
     (body as u16 + CHROME).min(area.height.saturating_sub(CONV_MIN + ABOVE))
 }
@@ -84,6 +86,7 @@ pub(super) fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     // body never runs into it
     let body_w = w.saturating_sub(2);
     let keys = app.panel_keys();
+    let cwd = app.cwd.clone();
     let c = if matches!(app.panel, Some(Panel::Help(_))) {
         help_content(app, &t, body_w, rows)
     } else {
@@ -93,6 +96,8 @@ pub(super) fn render(app: &mut App, frame: &mut Frame, area: Rect) {
             }
             Some(Panel::Browse { picker, .. }) => list_content(&t, picker, body_w, rows),
             Some(Panel::SessionAction { action, .. }) => action_content(&t, action, body_w),
+            Some(Panel::Approval(a)) => approval_content(&t, a, body_w, rows),
+            Some(Panel::Tools(d)) => tools_content(&cwd, &t, d, body_w),
             _ => return,
         }
     };
@@ -451,16 +456,145 @@ fn action_content(t: &Theme, action: &SessionAction, w: usize) -> Content {
     }
 }
 
+/// `/tools`: a question, what it means, and a few choices walked with the
+/// cursor, each with its control on the right: `[✓]` for a checkbox, `◀ 8 ▶`
+/// for a number. No `Continue` row: `Esc` applies whatever is set.
+fn tools_content(cwd: &str, t: &Theme, d: &ToolsDialog, w: usize) -> Content {
+    let body = tools_lines(t, d, w);
+    let total = body.len();
+    Content {
+        title: "Let the model use files?".to_string(),
+        tabs: Vec::new(),
+        info: cwd.to_string(),
+        hint: Line::from(Span::styled(
+            " only under this directory · every edit is a diff you apply or skip · no shell",
+            t.muted(),
+        )),
+        body,
+        total,
+        scroll: 0,
+    }
+}
+
+/// One line per row of the tools panel, shown under them for the row the
+/// cursor is on.
+const TOOLS_ROW_HELP: [&str; 4] = [
+    "the model can open and list files under this directory, and nothing more",
+    "the model proposes a diff; nothing is written until you apply it",
+    "the model proposes a new file; nothing is written until you apply it",
+    "how many times the model may use a tool before it has to answer",
+];
+
+/// The body of the tools panel; its length is the panel's height.
+pub(super) fn tools_lines(t: &Theme, d: &ToolsDialog, w: usize) -> Vec<Line<'static>> {
+    let mut lines = help_text(
+        t,
+        "It gets read_file and list_dir; edit_file and write_file with the boxes below. It cannot run commands, delete or rename files, or reach anything above this directory.",
+        w,
+    );
+    lines.push(Line::from(""));
+    let check = |on: bool| if on { "[✓]" } else { "[ ]" };
+    let rows: [(&str, String); 4] = [
+        ("Read files", check(d.on).to_string()),
+        ("Edit existing files", check(d.edit).to_string()),
+        ("Create new files", check(d.create).to_string()),
+        ("Max steps per message", format!("◀ {} ▶", d.rounds)),
+    ];
+    for (i, (label, control)) in rows.iter().enumerate() {
+        let selected = d.row == i;
+        // the number only matters with the tools on
+        let dim = i == ToolsDialog::ROUNDS && !d.on;
+        let label_style = if selected {
+            t.soft_bold()
+        } else if dim {
+            t.muted()
+        } else {
+            t.text()
+        };
+        let control_w = width(control);
+        let label = truncate(label, w.saturating_sub(control_w + 6).max(8));
+        let pad = w.saturating_sub(3 + width(&label) + 1 + control_w + 1);
+        lines.push(Line::from(vec![
+            Span::styled(if selected { " ❯ " } else { "   " }, t.accent()),
+            Span::styled(label, label_style),
+            Span::styled(" ".repeat(pad + 1), t.text()),
+            Span::styled(
+                control.clone(),
+                if dim {
+                    t.muted()
+                } else if selected {
+                    t.soft()
+                } else {
+                    t.accent()
+                },
+            ),
+        ]));
+    }
+    // what the row under the cursor means, one muted line that keeps its
+    // place, so the panel does not change height as the cursor walks
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("   ", t.text()),
+        Span::styled(
+            truncate(
+                TOOLS_ROW_HELP[d.row.min(TOOLS_ROW_HELP.len() - 1)],
+                w.saturating_sub(4),
+            ),
+            t.muted(),
+        ),
+    ]));
+    lines
+}
+
+/// An edit the model asked for: the file and the counts in the title, the
+/// two choices on the second row as chips (the one the cursor is on painted
+/// on `moon`, like an open tab), and the diff as the body, which scrolls.
+/// Nothing is on disk until `Apply`.
+fn approval_content(t: &Theme, a: &mut Approval, w: usize, rows: usize) -> Content {
+    a.rows = rows;
+    a.scroll_by(0);
+    let chip = |label: &str, on: bool| {
+        Span::styled(
+            format!(" {label} "),
+            if on { t.selected() } else { t.muted() },
+        )
+    };
+    let hint = Line::from(vec![
+        Span::styled(" ", t.text()),
+        chip("Apply", a.choice == EditChoice::Apply),
+        Span::styled(" ", t.text()),
+        chip("Skip", a.choice == EditChoice::Skip),
+        Span::styled(
+            "  the model wants this change · nothing is written until you apply",
+            t.muted(),
+        ),
+    ]);
+    let lines = diff::lines(t, &a.edit.diff, w);
+    let total = lines.len();
+    Content {
+        title: a.title(),
+        tabs: Vec::new(),
+        info: a.edit.counts(),
+        hint,
+        body: lines.into_iter().skip(a.scroll).take(rows).collect(),
+        total,
+        scroll: a.scroll,
+    }
+}
+
 /// The help is read one section at a time: tab walks them and each one
 /// scrolls on its own with ↑↓, PgUp/PgDn and the wheel. The window it was
 /// painted in is left in the state so the scroll can be clamped.
 fn help_content(app: &mut App, t: &Theme, w: usize, rows: usize) -> Content {
     let version = app.version.clone();
+    let tab = match &app.panel {
+        Some(Panel::Help(h)) => h.tab,
+        _ => unreachable!("the help panel is open"),
+    };
+    let lines = help_lines(app, t, tab, w);
     let Some(Panel::Help(h)) = app.panel.as_mut() else {
         unreachable!("the help panel is open")
     };
-    let tab = h.tab;
-    let lines = help_lines(t, tab, w);
     let total = lines.len();
     h.rows = rows;
     h.total = total;
@@ -558,23 +692,22 @@ const BASICS: &[(&str, &str)] = &[
         "what is attached and what it costs, or ctrl+f; the count sits in the status row",
     ),
     (
+        "/tools",
+        "let the model read, edit or create files under this directory, each write with your ok",
+    ),
+    (
         "@path",
         "attach a file to this message, or a range with @path:40-120",
     ),
-    ("enter · ctrl+j", "send · newline"),
-    ("esc", "cancel the generation · close this panel"),
-    ("ctrl+c", "cancel; twice with an empty input, quit"),
-];
-
-/// Where the rest of what moon reads and writes lives.
-const WHERE: &[&str] = &[
-    "A MOON.md in the project is read into every conversation; /context shows what the model is actually sent.",
-    "Conversations are saved as they go and `moon config init` writes the configuration file.",
-    "`moon update` brings in the latest release from GitHub; with update_check = true moon says at startup when there is one.",
+    ("ctrl+j", "newline"),
+    (
+        "esc · ctrl+c",
+        "cancel the generation · close the panel · clear the box (ctrl+c twice with an empty input quits)",
+    ),
 ];
 
 /// The `General` tab: what moon is, the basics, and where its files are.
-fn general_lines(t: &Theme, w: usize) -> Vec<Line<'static>> {
+fn general_lines(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
     let mut lines = help_text(t, ABOUT, w);
     lines.push(Line::from(""));
     lines.push(help_section(t, "Essentials", w));
@@ -586,8 +719,22 @@ fn general_lines(t: &Theme, w: usize) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
     lines.push(help_section(t, "Files", w));
     lines.push(Line::from(""));
-    for text in WHERE {
-        lines.extend(help_text(t, text, w));
+    let config = app.config_note();
+    let files: [(&str, &str); 4] = [
+        (
+            "MOON.md",
+            "read into every conversation; /context shows what the model is actually sent",
+        ),
+        ("Sessions", "saved automatically, as JSONL"),
+        ("Config", &config),
+        (
+            "Updates",
+            "`moon update` brings in the latest release from GitHub; with update_check = true moon says at startup when there is one",
+        ),
+    ];
+    let key_w = files.iter().map(|(k, _)| width(k)).max().unwrap_or(10) + 3;
+    for (k, d) in files {
+        lines.extend(help_row(t, k, d, key_w, w));
     }
     lines
 }
@@ -616,9 +763,9 @@ fn keys_lines(t: &Theme, w: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-pub(super) fn help_lines(t: &Theme, tab: HelpTab, w: usize) -> Vec<Line<'static>> {
+pub(super) fn help_lines(app: &App, t: &Theme, tab: HelpTab, w: usize) -> Vec<Line<'static>> {
     match tab {
-        HelpTab::General => general_lines(t, w),
+        HelpTab::General => general_lines(app, t, w),
         HelpTab::Commands => commands_lines(t, w),
         HelpTab::Keys => keys_lines(t, w),
     }

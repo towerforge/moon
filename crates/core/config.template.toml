@@ -33,6 +33,13 @@ base_url = "http://localhost:11434"   # or the OLLAMA_HOST variable
 # base_url    = "https://openrouter.ai/api/v1"
 # api_key_env = "OPENROUTER_API_KEY"   # never the key itself
 
+[tools]                       # the model using files; /tools opens the panel that changes it for one conversation
+enabled          = true       # Read files: read_file and list_dir at startup
+edit             = false      # Edit existing files: adds edit_file; every change is a diff you apply or skip
+create           = false      # Create new files: adds write_file, under the same approval
+# max_file_bytes = 200000     # bigger files are neither read nor edited
+# deny           = [".github/workflows/**"]   # never touched, on top of .git/ and the secrets filter
+
 # [theme.overrides]           # any of the ten Moon tokens, as hex
 # moon      = "#8fb8ff"
 # ink-muted = "#a9a7b8"

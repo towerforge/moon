@@ -178,6 +178,9 @@ impl App {
             self.theme.line(),
         ))];
         for i in self.view_from..self.items.len() {
+            if hidden(&self.items[i]) {
+                continue;
+            }
             take(&blank, &mut out);
             if is_request(&self.items[i]) {
                 take(&rule, &mut out);
@@ -303,6 +306,23 @@ impl App {
         lines
     }
 
+    /// For the `Config` row of `/help`: where it lives, or where `moon
+    /// config init` would write it if there is none yet, so there is always
+    /// one place to go back to.
+    pub fn config_note(&self) -> String {
+        if self.default_config {
+            format!(
+                "not written yet; `moon config init` writes one at {}",
+                self.cfg_path.display()
+            )
+        } else {
+            format!(
+                "read from {}; edit it directly, or `moon config init --force` to reset it",
+                self.cfg_path.display()
+            )
+        }
+    }
+
     /// Visible lines of the conversation for a given area. Updates the scroll
     /// and the auto-follow.
     pub fn visible_lines(&mut self, width: u16, height: u16) -> Vec<Line<'static>> {
@@ -311,6 +331,9 @@ impl App {
         let h = height as usize;
         let mut total = welcome.len();
         for i in self.view_from..self.items.len() {
+            if hidden(&self.items[i]) {
+                continue;
+            }
             total += 1
                 + usize::from(is_request(&self.items[i]))
                 + self.cache[i].as_ref().map_or(0, |r| r.lines.len());
@@ -349,6 +372,9 @@ impl App {
             self.theme.line(),
         ))];
         for i in self.view_from..self.items.len() {
+            if hidden(&self.items[i]) {
+                continue;
+            }
             take(&blank, &mut out);
             if is_request(&self.items[i]) {
                 take(&rule, &mut out);
@@ -388,6 +414,21 @@ pub(super) fn is_request(item: &Item) -> bool {
     matches!(item, Item::Message(m) if m.role == Role::User)
 }
 
+/// What is in the context but not on screen: a tool's result (the step line
+/// says what happened) and a reply that only carried calls.
+pub(super) fn hidden(item: &Item) -> bool {
+    match item {
+        Item::Message(m) => match m.role {
+            Role::Tool => true,
+            Role::Assistant => {
+                m.content.is_empty() && m.thinking.is_none() && !m.tool_calls.is_empty()
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 pub(super) fn item_key(item: &Item) -> usize {
     match item {
         Item::Message(m) => {
@@ -397,6 +438,8 @@ pub(super) fn item_key(item: &Item) -> usize {
                 + usize::from(m.usage.is_some())
         }
         Item::Error(s) | Item::Info(s) => s.len(),
+        // a step never changes once it is in
+        Item::Step(s) => s.path.len() + 1,
     }
 }
 
@@ -472,5 +515,33 @@ pub(super) fn item_lines(
             .lines()
             .flat_map(|l| wrap_line(&Line::from(Span::styled(l.to_string(), t.muted())), width))
             .collect(),
+        Item::Step(s) => step_line(s, t, width),
     }
+}
+
+/// One line per tool call: `·` for a read, `✎` for a write, then the verb,
+/// the path, the line counts of an edit and how it ended.
+fn step_line(s: &moon_agent::Step, t: &Theme, width: usize) -> Vec<Line<'static>> {
+    use moon_agent::Outcome;
+    let (glyph, glyph_style) = match (&s.outcome, s.tool.writes()) {
+        (Outcome::Failed(_), _) => ("✗", t.muted()),
+        (_, true) => ("✎", t.accent()),
+        (_, false) => ("·", t.muted()),
+    };
+    let mut text = format!("{:<5} {}", s.tool.verb(), s.path);
+    if s.tool.writes() && !matches!(s.outcome, Outcome::Failed(_)) {
+        text.push_str(&format!(" · +{} −{}", s.added, s.removed));
+    }
+    let (tail, tail_style) = match &s.outcome {
+        Outcome::Done => (String::new(), t.muted()),
+        Outcome::Applied => (" · applied".to_string(), t.ok()),
+        Outcome::Skipped => (" · skipped".to_string(), t.muted()),
+        Outcome::Failed(e) => (format!(" · {e}"), t.muted()),
+    };
+    let line = Line::from(vec![
+        Span::styled(format!("{glyph} "), glyph_style),
+        Span::styled(text, t.muted()),
+        Span::styled(tail, tail_style),
+    ]);
+    wrap_line(&line, width)
 }

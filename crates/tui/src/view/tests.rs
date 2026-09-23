@@ -18,7 +18,7 @@ fn app() -> App {
 fn app_at(root: std::path::PathBuf) -> App {
     App::new(RunOptions {
         config: Config::default(),
-        config_source: ConfigSource::Default,
+        config_source: ConfigSource::Default(std::path::PathBuf::from("/config.toml")),
         registry: Arc::new(Registry::new()),
         store: None,
         resume: None,
@@ -575,6 +575,16 @@ fn help_panel() {
     // General is a read, not a list: no command rows in it
     assert!(s.contains("Essentials ─"), "{s}");
     assert!(!s.contains("/model [name]"), "{s}");
+    // Files is rows too, same as Essentials: a short label, then the text
+    assert!(
+        s.contains("MOON.md") && s.contains("Sessions") && s.contains("Updates"),
+        "{s}"
+    );
+    // no config file yet: says where `moon config init` would write one
+    assert!(
+        s.contains("Config") && s.contains("writes one at /config.toml"),
+        "{s}"
+    );
     let footer = rows
         .iter()
         .find(|r| r.contains("esc close"))
@@ -869,4 +879,124 @@ fn panel_de_la_maquina_con_braille() {
     // esc closes it and the box comes back
     app.update(key(crossterm::event::KeyCode::Esc), &tx);
     assert!(app.panel.is_none());
+}
+
+#[test]
+fn the_approval_panel_and_the_edits_marker() {
+    use crate::app::{Approval, Panel};
+    use moon_agent::{tools, Eol, PendingEdit, Tool};
+    let mut app = app();
+    app.loading = false;
+    app.tools_on = true;
+    let mut term = Terminal::new(TestBackend::new(90, 24)).unwrap();
+    term.draw(|f| view(&mut app, f)).unwrap();
+    let s = screen(&term);
+    // the sign sits on the bottom row, on the left, listing what is on; the
+    // welcome banner does not repeat it
+    assert!(
+        s[23].trim_start().starts_with("⏵⏵ Read · Edit · Create"),
+        "{}",
+        s[23]
+    );
+    assert!(s[23].trim_end().ends_with("no model"), "{}", s[23]);
+    assert!(!s.iter().any(|l| l.contains("✎ edits on")), "{s:?}");
+
+    let before = "fn main() {\n    hi();\n}\n";
+    let after = "fn main() {\n    bye();\n}\n";
+    let edit = PendingEdit {
+        tool: Tool::EditFile,
+        path: "src/a.rs".into(),
+        before: before.into(),
+        after: after.into(),
+        eol: Eol::Lf,
+        bom: false,
+        expect: Some(1),
+        diff: tools::diff(before, after),
+    };
+    app.panel = Some(Panel::Approval(Box::new(Approval::new(edit))));
+    term.draw(|f| view(&mut app, f)).unwrap();
+    let s = screen(&term);
+    let title = s
+        .iter()
+        .position(|l| l.contains("Edit src/a.rs"))
+        .expect("title row");
+    assert!(s[title].contains("+1 −1"), "{}", s[title]);
+    assert!(
+        s[title + 1].contains(" Apply ") && s[title + 1].contains(" Skip "),
+        "{}",
+        s[title + 1]
+    );
+    assert!(
+        s.iter().any(|l| l.contains("- ") && l.contains("hi();")),
+        "{s:?}"
+    );
+    assert!(
+        s.iter().any(|l| l.contains("+ ") && l.contains("bye();")),
+        "{s:?}"
+    );
+    assert!(s[23].contains("esc cancel turn"), "{}", s[23]);
+    let buf = term.backend().buffer();
+    // the removed line in `alert`, the added one in `ok`
+    let row = |needle: &str| s.iter().position(|l| l.contains(needle)).unwrap() as u16;
+    let col = |line: &str, needle: &str| line.find(needle).unwrap() as u16;
+    let minus = row("hi();");
+    assert_eq!(
+        buf[(col(&s[minus as usize], "hi();"), minus)].fg,
+        app.theme.alert
+    );
+    let plus = row("bye();");
+    assert_eq!(
+        buf[(col(&s[plus as usize], "bye();"), plus)].fg,
+        app.theme.ok
+    );
+}
+
+#[test]
+fn the_tools_panel() {
+    use crate::app::{Panel, ToolsDialog};
+    let mut app = app();
+    app.loading = false;
+    app.panel = Some(Panel::Tools(ToolsDialog {
+        on: true,
+        edit: true,
+        create: false,
+        rounds: 8,
+        row: ToolsDialog::CREATE,
+    }));
+    let mut term = Terminal::new(TestBackend::new(90, 24)).unwrap();
+    term.draw(|f| view(&mut app, f)).unwrap();
+    let s = screen(&term);
+    let title = s
+        .iter()
+        .position(|l| l.contains("Let the model use files?"))
+        .expect("title row");
+    assert!(s[title].contains("~/Towerforge/moon"), "{}", s[title]);
+    assert!(
+        s[title + 1].contains("only under this directory"),
+        "{}",
+        s[title + 1]
+    );
+    let row = |needle: &str| {
+        s.iter()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no row with {needle}: {s:?}"))
+            .clone()
+    };
+    assert!(row("Read files").trim_end().ends_with("[✓]"));
+    assert!(row("Edit existing files").trim_end().ends_with("[✓]"));
+    let create = row("Create new files");
+    assert!(
+        create.starts_with(" ❯ ") && create.trim_end().ends_with("[ ]"),
+        "{create}"
+    );
+    assert!(row("Max steps per message").trim_end().ends_with("◀ 8 ▶"));
+    // the line under the rows explains the one the cursor is on
+    assert!(s.iter().any(|l| l.contains("proposes a new file")), "{s:?}");
+    assert!(!s.iter().any(|l| l.contains("before it has to answer")));
+    assert!(!s.iter().any(|l| l.contains("Continue")), "{s:?}");
+    assert!(
+        s[23].contains("enter tick") && s[23].contains("esc save"),
+        "{}",
+        s[23]
+    );
 }

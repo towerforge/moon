@@ -2,6 +2,7 @@
 //! server, vLLM, `mlx_lm.server`, OpenRouter, Groq… and Ollama itself via
 //! `/v1`.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use moon_core::{
     ChatEvent, ChatRequest, ChatStream, ConfigError, Health, Message, ModelInfo, Provider,
-    ProviderConfig, ProviderError, ProviderFactory, Role, Usage,
+    ProviderConfig, ProviderError, ProviderFactory, Role, ToolCall, Usage,
 };
 
 const KIND: &str = "openai";
@@ -157,6 +158,12 @@ struct ModelEntry {
 struct WireMessage {
     role: &'static str,
     content: String,
+    /// The calls an assistant message made, echoed back in the history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<Value>>,
+    /// On a tool message: the call it answers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -176,6 +183,122 @@ struct Delta {
     content: Option<String>,
     reasoning_content: Option<String>,
     reasoning: Option<String>,
+    /// Calls come in pieces: an `index` to gather them by, an `id` and the
+    /// name once, the arguments as fragments of a JSON string.
+    #[serde(default)]
+    tool_calls: Vec<DeltaToolCall>,
+}
+
+#[derive(Deserialize)]
+struct DeltaToolCall {
+    #[serde(default)]
+    index: usize,
+    id: Option<String>,
+    function: Option<DeltaFunction>,
+}
+
+#[derive(Deserialize)]
+struct DeltaFunction {
+    name: Option<String>,
+    arguments: Option<String>,
+}
+
+/// A call being gathered from its fragments.
+#[derive(Default)]
+struct PartialCall {
+    id: Option<String>,
+    name: String,
+    arguments: String,
+}
+
+impl PartialCall {
+    fn take(&mut self, d: DeltaToolCall) {
+        if let Some(id) = d.id.filter(|i| !i.is_empty()) {
+            self.id = Some(id);
+        }
+        if let Some(f) = d.function {
+            if let Some(n) = f.name {
+                self.name.push_str(&n);
+            }
+            if let Some(a) = f.arguments {
+                self.arguments.push_str(&a);
+            }
+        }
+    }
+
+    fn finish(self) -> ToolCall {
+        let raw = self.arguments.trim();
+        let arguments = if raw.is_empty() {
+            Value::Object(Map::new())
+        } else {
+            serde_json::from_str(raw).unwrap_or(Value::String(raw.to_string()))
+        };
+        ToolCall {
+            id: self.id,
+            name: self.name,
+            arguments,
+        }
+    }
+}
+
+/// Ids for calls that have none (a conversation that ran on Ollama and
+/// moved here): the assistant's calls get one each, and the tool messages
+/// that follow take them in order.
+fn wire_messages(messages: &[Message]) -> Vec<Value> {
+    let mut made = 0usize;
+    let mut pending: VecDeque<String> = VecDeque::new();
+    messages
+        .iter()
+        .map(|m| {
+            let role = match m.role {
+                Role::System => "system",
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::Tool => "tool",
+            };
+            let mut tool_calls = None;
+            let mut tool_call_id = None;
+            match m.role {
+                Role::Assistant if !m.tool_calls.is_empty() => {
+                    pending.clear();
+                    let calls = m
+                        .tool_calls
+                        .iter()
+                        .map(|c| {
+                            let id = c.id.clone().unwrap_or_else(|| {
+                                made += 1;
+                                format!("call_{made}")
+                            });
+                            pending.push_back(id.clone());
+                            serde_json::json!({
+                                "id": id,
+                                "type": "function",
+                                "function": {"name": c.name, "arguments": c.arguments.to_string()}
+                            })
+                        })
+                        .collect();
+                    tool_calls = Some(calls);
+                }
+                Role::Tool => {
+                    tool_call_id = match m.tool_call_id.clone() {
+                        Some(id) => {
+                            pending.retain(|p| *p != id);
+                            Some(id)
+                        }
+                        None => pending.pop_front(),
+                    };
+                }
+                _ => {}
+            }
+            serde_json::to_value(WireMessage {
+                role,
+                content: m.wire_content(),
+                tool_calls,
+                tool_call_id,
+            })
+            .unwrap_or(Value::Null)
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -188,23 +311,20 @@ fn build_body(req: &ChatRequest) -> Value {
     let p = &req.params;
     let mut body = Map::new();
     body.insert("model".into(), req.model.clone().into());
-    let messages: Vec<Value> = req
-        .messages
-        .iter()
-        .map(|m: &Message| {
-            serde_json::to_value(WireMessage {
-                role: match m.role {
-                    Role::System => "system",
-                    Role::User => "user",
-                    Role::Assistant => "assistant",
-                    Role::Tool => "tool",
-                },
-                content: m.wire_content(),
+    body.insert("messages".into(), wire_messages(&req.messages).into());
+    if !req.tools.is_empty() {
+        let tools: Vec<Value> = req
+            .tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {"name": t.name, "description": t.description, "parameters": t.parameters}
+                })
             })
-            .unwrap_or(Value::Null)
-        })
-        .collect();
-    body.insert("messages".into(), messages.into());
+            .collect();
+        body.insert("tools".into(), tools.into());
+    }
     body.insert("stream".into(), true.into());
     body.insert(
         "stream_options".into(),
@@ -303,6 +423,7 @@ where
         let started = Instant::now();
         let mut usage = Usage::default();
         let mut tokens: u32 = 0;
+        let mut calls: BTreeMap<usize, PartialCall> = BTreeMap::new();
         loop {
             let next = tokio::select! {
                 ev = events.next() => Ok(ev),
@@ -332,7 +453,14 @@ where
                     tokens += 1;
                     yield ChatEvent::Delta(c);
                 }
+                for d in delta.tool_calls {
+                    calls.entry(d.index).or_default().take(d);
+                }
             }
+        }
+        // the calls are whole only once the stream is: they go out before `Done`
+        for (_, c) in calls {
+            yield ChatEvent::ToolCall(c.finish());
         }
         let secs = started.elapsed().as_secs_f32();
         let n = usage.completion_tokens.unwrap_or(tokens);
@@ -385,6 +513,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_calls_gathered_from_fragments() {
+        // the id and the name once, the arguments cut across three chunks,
+        // and a second call interleaved by index
+        let s = chunks(&[
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"function\":{\"name\":\"read_file\",\"arguments\":\"\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"pa\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_b\",\"function\":{\"name\":\"list_dir\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"th\\\": \\\"a.rs\\\"}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ]);
+        let events: Vec<_> = chat_stream(s, CancellationToken::new())
+            .map(|e| e.unwrap())
+            .collect()
+            .await;
+        assert_eq!(
+            events[0],
+            ChatEvent::ToolCall(ToolCall {
+                id: Some("call_a".into()),
+                name: "read_file".into(),
+                arguments: serde_json::json!({"path": "a.rs"}),
+            })
+        );
+        assert_eq!(
+            events[1],
+            ChatEvent::ToolCall(ToolCall {
+                id: Some("call_b".into()),
+                name: "list_dir".into(),
+                arguments: serde_json::json!({}),
+            })
+        );
+        assert!(matches!(events[2], ChatEvent::Done(_)));
+        // arguments that never became JSON are passed on as text for the tool to refuse
+        let broken = PartialCall {
+            id: None,
+            name: "x".into(),
+            arguments: "{not json".into(),
+        }
+        .finish();
+        assert_eq!(broken.arguments, Value::String("{not json".into()));
+    }
+
+    #[test]
+    fn body_with_tools_and_the_ids_it_makes_up() {
+        let mut assistant = Message::assistant("");
+        assistant.tool_calls.push(ToolCall {
+            id: Some("call_9".into()),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "a.rs"}),
+        });
+        // a second call with no id, as Ollama leaves them
+        assistant.tool_calls.push(ToolCall {
+            id: None,
+            name: "list_dir".into(),
+            arguments: serde_json::json!({}),
+        });
+        let req = ChatRequest {
+            model: "m".into(),
+            messages: vec![
+                Message::user("go"),
+                assistant,
+                Message::tool("read_file", Some("call_9".into()), "fn main() {}"),
+                Message::tool("list_dir", None, "src/"),
+            ],
+            params: Default::default(),
+            tools: vec![moon_core::ToolSpec {
+                name: "read_file".into(),
+                description: "reads".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+        };
+        let b = build_body(&req);
+        assert_eq!(b["tools"][0]["type"], "function");
+        assert_eq!(b["tools"][0]["function"]["name"], "read_file");
+        let calls = &b["messages"][1]["tool_calls"];
+        assert_eq!(calls[0]["id"], "call_9");
+        // the arguments travel as a JSON string, as the API wants them
+        assert_eq!(calls[0]["function"]["arguments"], "{\"path\":\"a.rs\"}");
+        assert_eq!(calls[1]["id"], "call_1");
+        assert_eq!(b["messages"][2]["tool_call_id"], "call_9");
+        // the tool message with no id takes the made-up one, in order
+        assert_eq!(b["messages"][3]["tool_call_id"], "call_1");
+        assert!(b["messages"][0].get("tool_calls").is_none());
+        // without tools nothing changes
+        let plain = ChatRequest {
+            model: "m".into(),
+            messages: vec![Message::user("hi")],
+            params: Default::default(),
+            tools: Vec::new(),
+        };
+        assert!(build_body(&plain).get("tools").is_none());
+    }
+
+    #[tokio::test]
     async fn models_auth_and_bearer() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -429,6 +651,7 @@ mod tests {
             model: "m".into(),
             messages: vec![Message::user("hello")],
             params: Default::default(),
+            tools: Vec::new(),
         };
         let events: Vec<_> = p
             .chat(req, CancellationToken::new())
@@ -451,6 +674,7 @@ mod tests {
                 max_tokens: Some(9),
                 ..Default::default()
             },
+            tools: Vec::new(),
         };
         let b = build_body(&req);
         assert_eq!(b["model"], "m");

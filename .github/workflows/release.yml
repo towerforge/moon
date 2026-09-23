@@ -6,7 +6,6 @@ name: release
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
 
 permissions:
@@ -28,7 +27,7 @@ jobs:
           - { target: aarch64-apple-darwin,       os: macos-latest }
           - { target: x86_64-pc-windows-gnu,      os: ubuntu-latest, cross: true }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -51,7 +50,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Check that the tag matches VERSION
         run: test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
       - uses: actions/download-artifact@v4

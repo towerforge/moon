@@ -5,7 +5,7 @@ use std::fs;
 use serde_json::json;
 
 use super::*;
-use crate::sandbox::Eol;
+use crate::sandbox::{encode, Eol};
 
 fn tree() -> (tempfile::TempDir, Sandbox) {
     let dir = tempfile::tempdir().unwrap();
@@ -215,10 +215,13 @@ fn write_file_creates_or_replaces() {
     assert_eq!(new.expect, None);
     assert_eq!(new.before, "");
     assert_eq!((new.diff.added, new.diff.removed), (1, 0));
+    // a new file has no convention of its own: it takes the platform's, so
+    // on Windows the bytes on disk are CRLF
+    assert_eq!(new.eol, Eol::platform());
     new.apply(&sb).unwrap();
     assert_eq!(
-        fs::read_to_string(d.path().join("docs/a/b.md")).unwrap(),
-        "# new\n"
+        fs::read(d.path().join("docs/a/b.md")).unwrap(),
+        encode("# new\n", Eol::platform(), false)
     );
     // an existing file must have been read
     let over = json!({"path": "README.md", "content": "# bye\n"});

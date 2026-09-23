@@ -232,6 +232,11 @@ fn status_line<'a>(state: &State, theme: &'a Theme) -> Line<'a> {
             Span::styled("✗ ", theme.alert()),
             Span::styled("cancelled · nothing was touched", theme.muted()),
         ]),
+        Phase::Refused(r) => Line::from(vec![
+            Span::styled("✗ ", theme.alert()),
+            Span::styled(r.why, theme.text()),
+            Span::styled(" · --force overwrites it", theme.muted()),
+        ]),
         Phase::Failed(e) => Line::from(vec![
             Span::styled("✗ ", theme.alert()),
             Span::styled(shorten(e, 68), theme.text()),
@@ -263,6 +268,8 @@ fn keys_line<'a>(state: &State, theme: &'a Theme) -> Line<'a> {
             Span::styled("start chatting with the new version", theme.muted()),
         ]),
         Phase::UpToDate | Phase::Cancelled => Line::default(),
+        // the command that updates this moon, whole: it is what to type next
+        Phase::Refused(r) => Line::from(Span::styled(r.fix, theme.soft_bold())),
         Phase::Failed(_) => Line::from(vec![Span::styled(
             format!("install.sh with MOON_FORCE=1: {}", super::INSTALL_DOCS),
             theme.muted(),
@@ -400,6 +407,23 @@ mod tests {
         assert!(out.contains("is the latest version"), "{out}");
         assert!(!out.contains("What's new"), "{out}");
         assert!(!out.contains("enter"), "{out}");
+    }
+
+    #[test]
+    fn a_refusal_shows_the_whole_command_that_updates_it_instead() {
+        let cargo = moon_updater::InstallKind::Cargo.refusal().unwrap();
+        let out = dump(Phase::Refused(cargo), 80);
+        assert!(out.contains("0.1.1  →  0.1.2"), "{out}");
+        assert!(out.contains("✗ this moon came from cargo"), "{out}");
+        assert!(out.contains("--force overwrites it"), "{out}");
+        // the command is not cut short: it is the one thing to take away
+        assert!(out.contains(cargo.fix), "{out}");
+        // and install.sh is not the way back in from a cargo install
+        assert!(!out.contains("install.sh"), "{out}");
+        let dev = moon_updater::InstallKind::Dev.refusal().unwrap();
+        let out = dump(Phase::Refused(dev), 80);
+        assert!(out.contains("local build under target/"), "{out}");
+        assert!(out.contains("┆ make build"), "{out}");
     }
 
     #[test]

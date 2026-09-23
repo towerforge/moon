@@ -16,7 +16,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 pub use cache::CheckCache;
-pub use install::{install_binary, InstallKind};
+pub use install::{install_binary, InstallKind, Refusal};
 pub use target::{Target, APP};
 pub use version::Version;
 

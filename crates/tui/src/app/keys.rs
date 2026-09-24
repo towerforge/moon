@@ -69,7 +69,8 @@ impl App {
             KeyCode::Char('j') if ctrl => self.input.newline(),
             KeyCode::Char('x') if ctrl => self.input.clear(),
             KeyCode::Esc => {
-                if self.is_streaming() {
+                // a reply streaming, or a command of the model running
+                if self.turn_active() {
                     self.cancel_generation();
                 } else if self.selection.is_some() {
                     self.selection = None;

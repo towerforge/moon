@@ -34,7 +34,10 @@ fn names_specs_and_verbs() {
     assert_eq!(Tool::from_name("bash"), None);
     assert!(Tool::EditFile.writes() && Tool::WriteFile.writes());
     assert!(!Tool::ReadFile.writes() && !Tool::ListDir.writes());
+    // a command is not a write: whether it waits is the command's own
+    assert!(!Tool::RunCommand.writes());
     assert_eq!(Tool::EditFile.verb(), "edit");
+    assert_eq!(Tool::RunCommand.verb(), "run");
 }
 
 #[test]

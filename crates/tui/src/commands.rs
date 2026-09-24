@@ -75,7 +75,7 @@ pub const SPECS: &[Spec] = &[
     Spec {
         name: "tools",
         args: "",
-        help: "the model using files: a panel to turn it on and off, decide whether it may only read, also edit or also create, and how many rounds a turn gets",
+        help: "what the model may do: one row per capability, files and commands alike, each off, ask or allow, and how many rounds a turn gets",
     },
     Spec {
         name: "context",
@@ -130,11 +130,11 @@ pub const KEYS: &[(&str, &str)] = &[
     ("ctrl+s", "sessions panel: resume a saved conversation"),
     (
         "↑↓ · enter · s · esc",
-        "in the edit panel: choose apply or skip · confirm · skip · cancel the turn; pgup/pgdn scroll the diff",
+        "in the approval panel: choose apply (or run) or skip · confirm · skip · cancel the turn; pgup/pgdn scroll the diff",
     ),
     (
         "↑↓ · enter · ←→ · esc",
-        "in the tools panel: move · tick the box under the cursor, or continue on the last row · change the number · cancel",
+        "in the tools panel: move · open a group, or on and off inside one · a whole group off or on, or off · ask · allow inside one, or the number · save: back out of a group, or close from the groups",
     ),
     ("↑ · ↓", "prompt history (on the first / last line)"),
     ("pgup · pgdn · ctrl+↑ · ctrl+↓", "scroll the conversation"),

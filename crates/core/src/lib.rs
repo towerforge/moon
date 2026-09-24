@@ -13,7 +13,10 @@ pub mod registry;
 pub mod session;
 pub mod types;
 
-pub use config::{Config, ConfigSource, GeneralConfig, ProviderConfig, ThemeConfig, ToolsConfig};
+pub use config::{
+    Config, ConfigSource, GeneralConfig, Permission, ProviderConfig, ThemeConfig, ToolsConfig,
+    ToolsFile,
+};
 pub use context::{Attachment, Spec};
 pub use error::{ConfigError, ProviderError, SessionError};
 pub use paths::Paths;

@@ -12,11 +12,25 @@ impl App {
             t.accent(),
         );
         // the model is done for now: what it wants is on screen, waiting
-        if self.waiting_approval() {
+        if let Some(Panel::Approval(a)) = &self.panel {
             let mut v = vec![star, Span::raw(" ")];
             v.extend(self.shimmer("waiting for your approval"));
             v.push(Span::styled(
-                " · enter apply · s skip · esc cancel the turn",
+                format!(
+                    " · enter {} · s skip · esc cancel the turn",
+                    a.verb().to_ascii_lowercase()
+                ),
+                t.muted(),
+            ));
+            return Some(v);
+        }
+        // a command of the model is running: its line, and for how long
+        if let (Some(r), Some(exec)) = (&self.running, self.running_command()) {
+            let mut v = vec![star, Span::raw(" ")];
+            v.extend(self.shimmer("running"));
+            v.push(Span::styled(format!(" {}", exec.line), t.text()));
+            v.push(Span::styled(
+                format!(" ({}) · esc to cancel", fmt_dur(r.started.elapsed())),
                 t.muted(),
             ));
             return Some(v);
@@ -238,21 +252,28 @@ impl App {
         }
     }
 
-    /// The one permanent sign that the model can reach the files, at the
+    /// The one permanent sign that the model can reach the project, at the
     /// left of the hints row, `moon` and bold, like the mode indicators of
-    /// Claude Code: `⏵⏵ Read · Edit · Create`, only the boxes that are on
-    /// (`Read` is always one of them: it is the switch itself).
+    /// Claude Code: `⏵⏵ Read · Edit · Create · 4 commands`, one word per
+    /// file capability that is on and how many commands are.
     pub fn edit_mode_span(&self) -> Option<Span<'static>> {
         if !self.tools_on {
             return None;
         }
-        let (edit, create) = self.tools_scope();
-        let mut words = vec!["Read"];
-        if edit {
-            words.push("Edit");
+        let policy = self.policy();
+        let mut words: Vec<String> = Vec::new();
+        if policy.reads() {
+            words.push("Read".into());
         }
-        if create {
-            words.push("Create");
+        if policy.edits() {
+            words.push("Edit".into());
+        }
+        if policy.creates() {
+            words.push("Create".into());
+        }
+        let n = self.tools_commands().len();
+        if n > 0 {
+            words.push(format!("{n} {}", models::plural(n, "command")));
         }
         Some(Span::styled(
             format!("⏵⏵ {}", words.join(" · ")),
@@ -363,17 +384,29 @@ impl App {
                 vec![("tab", "section"), ("↑↓", "scroll"), ("esc", "close")]
             }
             Some(Panel::Machine) => vec![("esc", "close")],
-            Some(Panel::Tools(_)) => vec![
-                ("↑↓", "move"),
-                ("enter", "tick"),
-                ("←→", "change"),
-                ("esc", "save"),
-            ],
-            Some(Panel::Approval(_)) => vec![
+            Some(Panel::Tools(d)) => match d.level {
+                Level::Groups => vec![
+                    ("↑↓", "move"),
+                    ("enter", "open"),
+                    ("←→", "group off/on"),
+                    ("esc", "save"),
+                ],
+                Level::Group(_) => vec![
+                    ("↑↓", "move"),
+                    ("enter", "on/off"),
+                    ("←→", "off · ask · allow"),
+                    ("esc", "save & back"),
+                ],
+            },
+            Some(Panel::Approval(a)) => vec![
                 ("↑↓", "choose"),
                 ("enter", "confirm"),
                 ("s", "skip"),
-                ("pgup/pgdn", "scroll"),
+                if a.edit().is_some() {
+                    ("pgup/pgdn", "scroll")
+                } else {
+                    ("r", "run")
+                },
                 ("esc", "cancel turn"),
             ],
             Some(Panel::SessionAction { action, .. }) => match action {

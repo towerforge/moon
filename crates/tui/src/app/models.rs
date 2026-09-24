@@ -196,14 +196,17 @@ impl App {
                 self.loaded = LoadedState::Unknown;
             }
         }
-        // the conversation had the file tools: back on, unless they are
-        if s.meta.tools && !self.tools_on {
-            if let Err(e) = self.enable_tools() {
-                self.notify(e);
+        // the conversation had the file tools: back on, unless they are.
+        // With a tools.toml around, that file says what is on, not the session
+        if self.tools_seen.is_none() {
+            if s.meta.tools && !self.tools_on {
+                if let Err(e) = self.enable_tools() {
+                    self.notify(e);
+                }
             }
-        }
-        if s.meta.tools && self.tools_on {
-            self.set_tools_scope(s.meta.tools_edit, s.meta.tools_create);
+            if s.meta.tools && self.tools_on {
+                self.set_tools_scope(s.meta.tools_edit, s.meta.tools_create);
+            }
         }
         self.live = s
             .meta

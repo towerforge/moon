@@ -44,8 +44,15 @@ pub(super) fn height(app: &App, area: Rect) -> u16 {
             SessionAction::Delete { .. } => 2,
             SessionAction::Rename { .. } => 1,
         },
-        Panel::Approval(a) => a.edit.diff.lines.len().clamp(1, list_body(area)),
-        Panel::Tools(d) => tools_lines(&app.theme, d, area.width.saturating_sub(2) as usize).len(),
+        Panel::Approval(a) => a.body_len().clamp(1, list_body(area)),
+        // the catalogue is long: two thirds at most, and it scrolls
+        Panel::Tools(d) => {
+            let max = (area.height as usize * 2 / 3).max(MIN_BODY);
+            tools_lines(&app.theme, d, area.width.saturating_sub(2) as usize)
+                .0
+                .len()
+                .clamp(MIN_BODY, max)
+        }
     };
     (body as u16 + CHROME).min(area.height.saturating_sub(CONV_MIN + ABOVE))
 }
@@ -97,7 +104,7 @@ pub(super) fn render(app: &mut App, frame: &mut Frame, area: Rect) {
             Some(Panel::Browse { picker, .. }) => list_content(&t, picker, body_w, rows),
             Some(Panel::SessionAction { action, .. }) => action_content(&t, action, body_w),
             Some(Panel::Approval(a)) => approval_content(&t, a, body_w, rows),
-            Some(Panel::Tools(d)) => tools_content(&cwd, &t, d, body_w),
+            Some(Panel::Tools(d)) => tools_content(&cwd, &t, d, body_w, rows),
             _ => return,
         }
     };
@@ -456,100 +463,225 @@ fn action_content(t: &Theme, action: &SessionAction, w: usize) -> Content {
     }
 }
 
-/// `/tools`: a question, what it means, and a few choices walked with the
-/// cursor, each with its control on the right: `[✓]` for a checkbox, `◀ 8 ▶`
-/// for a number. No `Continue` row: `Esc` applies whatever is set.
-fn tools_content(cwd: &str, t: &Theme, d: &ToolsDialog, w: usize) -> Content {
-    let body = tools_lines(t, d, w);
-    let total = body.len();
+/// `/tools`: on the first level the groups of the catalogue, one row each
+/// with what is on in it, and the step limit under them; inside a group,
+/// its entries with their permission as a selector. Both scroll if they
+/// must. No `Continue` row: `Esc` steps out of a group, and applies
+/// whatever is set from the groups.
+fn tools_content(cwd: &str, t: &Theme, d: &mut ToolsDialog, w: usize, rows: usize) -> Content {
+    let (lines, cursor) = tools_lines(t, d, w);
+    let total = lines.len();
+    d.show(cursor, total, rows);
+    let (title, hint) = match d.level {
+        Level::Groups => (
+            "What may the model do?".to_string(),
+            " off: not offered · ask: shown and waits for you · allow: runs on its own".to_string(),
+        ),
+        Level::Group(c) => (
+            format!("What may the model do? › {}", c.title()),
+            format!(" {}", c.about()),
+        ),
+    };
     Content {
-        title: "Let the model use files?".to_string(),
+        title,
         tabs: Vec::new(),
         info: cwd.to_string(),
-        hint: Line::from(Span::styled(
-            " only under this directory · every edit is a diff you apply or skip · no shell",
-            t.muted(),
-        )),
-        body,
+        hint: Line::from(Span::styled(hint, t.muted())),
+        body: lines.into_iter().skip(d.scroll).take(rows).collect(),
         total,
-        scroll: 0,
+        scroll: d.scroll,
     }
 }
 
-/// One line per row of the tools panel, shown under them for the row the
-/// cursor is on.
-const TOOLS_ROW_HELP: [&str; 4] = [
-    "the model can open and list files under this directory, and nothing more",
-    "the model proposes a diff; nothing is written until you apply it",
-    "the model proposes a new file; nothing is written until you apply it",
-    "how many times the model may use a tool before it has to answer",
-];
+/// The body of the tools panel at the level it is at, and the line the
+/// cursor is on, for the scroll.
+pub(super) fn tools_lines(t: &Theme, d: &ToolsDialog, w: usize) -> (Vec<Line<'static>>, usize) {
+    match d.level {
+        Level::Groups => groups_lines(t, d, w),
+        Level::Group(c) => group_lines(t, d, c, w),
+    }
+}
 
-/// The body of the tools panel; its length is the panel's height.
-pub(super) fn tools_lines(t: &Theme, d: &ToolsDialog, w: usize) -> Vec<Line<'static>> {
+/// The groups: ` ❯ Files  ▸  allow: read files, ls · ask: edit existing
+/// files`, and the steps row after a blank one.
+fn groups_lines(t: &Theme, d: &ToolsDialog, w: usize) -> (Vec<Line<'static>>, usize) {
     let mut lines = help_text(
         t,
-        "It gets read_file and list_dir; edit_file and write_file with the boxes below. It cannot run commands, delete or rename files, or reach anything above this directory.",
+        "Only under this directory, and never through a shell. Enter opens a group; ← turns the whole of it off, → turns it on with its defaults.",
         w,
     );
     lines.push(Line::from(""));
-    let check = |on: bool| if on { "[✓]" } else { "[ ]" };
-    let rows: [(&str, String); 4] = [
-        ("Read files", check(d.on).to_string()),
-        ("Edit existing files", check(d.edit).to_string()),
-        ("Create new files", check(d.create).to_string()),
-        ("Max steps per message", format!("◀ {} ▶", d.rounds)),
-    ];
-    for (i, (label, control)) in rows.iter().enumerate() {
+    let label_w = Category::ALL
+        .iter()
+        .map(|c| width(c.title()))
+        .max()
+        .unwrap_or(5);
+    let mut cursor = 0;
+    for (i, c) in Category::ALL.iter().enumerate() {
         let selected = d.row == i;
-        // the number only matters with the tools on
-        let dim = i == ToolsDialog::ROUNDS && !d.on;
-        let label_style = if selected {
-            t.soft_bold()
-        } else if dim {
-            t.muted()
-        } else {
-            t.text()
-        };
-        let control_w = width(control);
-        let label = truncate(label, w.saturating_sub(control_w + 6).max(8));
-        let pad = w.saturating_sub(3 + width(&label) + 1 + control_w + 1);
-        lines.push(Line::from(vec![
-            Span::styled(if selected { " ❯ " } else { "   " }, t.accent()),
-            Span::styled(label, label_style),
-            Span::styled(" ".repeat(pad + 1), t.text()),
-            Span::styled(
-                control.clone(),
-                if dim {
-                    t.muted()
-                } else if selected {
-                    t.soft()
-                } else {
-                    t.accent()
-                },
-            ),
-        ]));
+        if selected {
+            cursor = lines.len();
+        }
+        let on = d.group_on(*c);
+        lines.push(panel_row(
+            t,
+            c.title(),
+            if selected {
+                t.soft_bold()
+            } else if on {
+                t.text()
+            } else {
+                t.muted()
+            },
+            "▸",
+            if selected { t.soft() } else { t.accent() },
+            &d.summary(*c),
+            selected,
+            label_w,
+            w,
+        ));
     }
-    // what the row under the cursor means, one muted line that keeps its
-    // place, so the panel does not change height as the cursor walks
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("   ", t.text()),
-        Span::styled(
-            truncate(
-                TOOLS_ROW_HELP[d.row.min(TOOLS_ROW_HELP.len() - 1)],
-                w.saturating_sub(4),
-            ),
-            t.muted(),
-        ),
-    ]));
-    lines
+    (lines, cursor)
 }
 
-/// An edit the model asked for: the file and the counts in the title, the
-/// two choices on the second row as chips (the one the cursor is on painted
-/// on `moon`, like an open tab), and the diff as the body, which scrolls.
-/// Nothing is on disk until `Apply`.
+/// Inside a group: its entries, one row each.
+fn group_lines(t: &Theme, d: &ToolsDialog, c: Category, w: usize) -> (Vec<Line<'static>>, usize) {
+    const STEPS: &str = "max steps per message";
+    let members = ToolsDialog::members(c);
+    let steps = c == ToolsDialog::STEPS_GROUP;
+    let id_w = members
+        .iter()
+        .map(|i| width(CATALOG[*i].id))
+        .chain(steps.then(|| width(STEPS)))
+        .max()
+        .unwrap_or(8);
+    let mut lines = Vec::new();
+    let mut cursor = 0;
+    for (n, i) in members.into_iter().enumerate() {
+        let e = &CATALOG[i];
+        let selected = n == d.row;
+        if selected {
+            cursor = lines.len();
+        }
+        lines.push(permission_row(
+            t,
+            e,
+            d.policy.get(e.id),
+            d.found_at(i),
+            selected,
+            id_w,
+            w,
+        ));
+    }
+    if steps {
+        // the limit on every turn, after the capabilities: a number, no off
+        let selected = d.on_steps();
+        if selected {
+            cursor = lines.len();
+        }
+        let on = !d.policy.is_empty();
+        lines.push(panel_row(
+            t,
+            STEPS,
+            if selected {
+                t.soft_bold()
+            } else if on {
+                t.text()
+            } else {
+                t.muted()
+            },
+            &format!("◀ {:^5} ▶", d.max_steps),
+            if selected {
+                t.soft()
+            } else if on {
+                t.accent()
+            } else {
+                t.muted()
+            },
+            "tool calls one message may take",
+            selected,
+            id_w,
+            w,
+        ));
+    }
+    (lines, cursor)
+}
+
+/// ` ❯ git diff      ◀ allow ▶  the changes not yet committed`: the id, the
+/// selector, and what it does; `not installed` in its place, and the row
+/// muted, for a program the machine does not have.
+fn permission_row(
+    t: &Theme,
+    e: &Entry,
+    perm: Permission,
+    found: bool,
+    selected: bool,
+    id_w: usize,
+    w: usize,
+) -> Line<'static> {
+    let on = perm != Permission::Off;
+    let label_style = if selected {
+        t.soft_bold()
+    } else if on && found {
+        t.text()
+    } else {
+        t.muted()
+    };
+    let control_style = match perm {
+        _ if !found => t.muted(),
+        Permission::Allow => t.accent(),
+        Permission::Ask => t.soft(),
+        Permission::Off => t.muted(),
+    };
+    panel_row(
+        t,
+        e.id,
+        label_style,
+        &format!("◀ {:^5} ▶", perm.as_str()),
+        control_style,
+        if found { e.help } else { "not installed" },
+        selected,
+        id_w,
+        w,
+    )
+}
+
+/// One row of the tools panel: the cursor, the label padded to the widest,
+/// the control, and the detail in the room left.
+#[allow(clippy::too_many_arguments)]
+fn panel_row(
+    t: &Theme,
+    label: &str,
+    label_style: Style,
+    control: &str,
+    control_style: Style,
+    detail: &str,
+    selected: bool,
+    id_w: usize,
+    w: usize,
+) -> Line<'static> {
+    // cursor, the label padded, two spaces, the control, two spaces, the
+    // detail, a space
+    let detail_w = w.saturating_sub(3 + id_w + 2 + width(control) + 2 + 1);
+    Line::from(vec![
+        Span::styled(if selected { " ❯ " } else { "   " }, t.accent()),
+        Span::styled(format!("{label:<id_w$}"), label_style),
+        Span::styled("  ", t.text()),
+        Span::styled(control.to_string(), control_style),
+        Span::styled("  ", t.text()),
+        Span::styled(truncate(detail, detail_w), t.muted()),
+    ])
+}
+
+/// Body rows of a command waiting for the ok: the line, the folder, a
+/// blank one and what the command is for.
+pub const RUN_BODY: usize = 4;
+
+/// An edit or a command the model asked for: the file and the counts, or
+/// the command, in the title, the two choices on the second row as chips
+/// (the one the cursor is on painted on `moon`, like an open tab), and the
+/// diff, or the command line, as the body, which scrolls. Nothing is on
+/// disk, and nothing runs, until it is confirmed.
 fn approval_content(t: &Theme, a: &mut Approval, w: usize, rows: usize) -> Content {
     a.rows = rows;
     a.scroll_by(0);
@@ -559,27 +691,54 @@ fn approval_content(t: &Theme, a: &mut Approval, w: usize, rows: usize) -> Conte
             if on { t.selected() } else { t.muted() },
         )
     };
+    let (note, lines) = match &a.pending {
+        Pending::Edit(e) => (
+            "  the model wants this change · nothing is written until you apply",
+            diff::lines(t, &e.diff, w),
+        ),
+        Pending::Run(e) => (
+            "  the model wants to run this · nothing runs until you confirm",
+            run_lines(t, e, w),
+        ),
+    };
     let hint = Line::from(vec![
         Span::styled(" ", t.text()),
-        chip("Apply", a.choice == EditChoice::Apply),
+        chip(a.verb(), a.choice == EditChoice::Apply),
         Span::styled(" ", t.text()),
         chip("Skip", a.choice == EditChoice::Skip),
-        Span::styled(
-            "  the model wants this change · nothing is written until you apply",
-            t.muted(),
-        ),
+        Span::styled(note, t.muted()),
     ]);
-    let lines = diff::lines(t, &a.edit.diff, w);
     let total = lines.len();
     Content {
         title: a.title(),
         tabs: Vec::new(),
-        info: a.edit.counts(),
+        info: a.info(),
         hint,
         body: lines.into_iter().skip(a.scroll).take(rows).collect(),
         total,
         scroll: a.scroll,
     }
+}
+
+/// The command as it would be typed, where it runs, and what it is for.
+fn run_lines(t: &Theme, e: &Exec, w: usize) -> Vec<Line<'static>> {
+    let where_ = if e.rel_dir == "." {
+        "in the project root".to_string()
+    } else {
+        format!("in {}", e.rel_dir)
+    };
+    vec![
+        Line::from(vec![
+            Span::styled(" $ ", t.muted()),
+            Span::styled(truncate(&e.line, w.saturating_sub(4)), t.text()),
+        ]),
+        Line::from(Span::styled(format!("   {where_}"), t.muted())),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("   {}", truncate(e.help, w.saturating_sub(4))),
+            t.muted(),
+        )),
+    ]
 }
 
 /// The help is read one section at a time: tab walks them and each one

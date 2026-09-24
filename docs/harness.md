@@ -1,6 +1,6 @@
 # Editing files from moon: harness, agent and sandbox
 
-*Design, 2026-09-22 · implemented the same day in `crates/agent` and wired into the interface; this is the shape the code follows.*
+*Design, 2026-09-22 · implemented the same day in `crates/agent` and wired into the interface; this is the shape the code follows. Amended 2026-09-24: permissions and commands, see "Permissions and commands" below.*
 
 moon promises today that it "never runs tools or writes to disk on the model's
 behalf". This proposal keeps that as the default and adds, behind an explicit
@@ -8,14 +8,21 @@ switch, one thing the model can do: **read and edit files under the directory
 moon was started in**, one approved diff at a time. Three rules that the code
 must make impossible to break, not merely discouraged:
 
-1. **Only files, never commands.** There is no shell tool. It is not disabled,
-   it does not exist, so no configuration can turn it on.
+1. **Only files, never a shell.** There is no shell tool: nothing the model
+   sends is ever handed to `sh` or `cmd`. Since 2026-09-24 there is a
+   `run_command` tool, limited to a fixed catalogue of programs the user ticks
+   one by one in `/tools`; it starts the program with its arguments as a list,
+   and that is the whole of it. The rule was "never commands" when this was
+   written; the decision to change it is recorded, not slipped in.
 2. **Only forward, never back.** Paths are relative to the start-up directory
    and must stay under it: no `..`, no `~`, no absolute path outside the root
    (one inside it, as pasted from the editor, is taken as relative), no symlink
    that leads outside. Enforced in one place, before and after touching the disk.
 3. **Only with your ok.** Every write shows its diff and waits. Reads and
    listings inside the sandbox run without asking. There is no `--yolo`.
+   *(2026-09-24: the wait became the default rather than the rule — `allow`
+   on editing or creating files, set by the user in `/tools`, writes without
+   showing the diff. See "Permissions and commands".)*
 
 The rest of this document is where the code goes, how a turn runs, what the
 sandbox checks, what the interface shows and in which order to build it.
@@ -222,8 +229,136 @@ again; if it occurs more than once, the error says to add context or set
 `replace_all`. `write_file` creates a file, or replaces one whole; replacing
 follows the freshness rule.
 
-There is no `delete`, no `rename`, no `glob`, no `grep`, no network. `grep`
-and `glob` are the first candidates for v2; deletion is not planned.
+There is no `delete`, no `rename`, no `glob`, no `grep` as tools, no network.
+`grep` and `glob` are the first candidates for v2 as tools; deletion is not
+planned. Commands are the fifth tool, added later: see "Permissions and commands".
+
+## Permissions and commands (added 2026-09-24)
+
+The user asked for commands the model may run, ticked one by one in
+`/tools`, and then for something solid rather than two kinds of switch
+(file boxes on one side, a command list on the other) for what is one
+question: what may the model do, and with what supervision. The answer is
+**one permission model**: every capability — moon's own file tools and each
+command of a fixed catalogue — has one of three states, and nothing else.
+
+| | |
+|---|---|
+| `off` | not offered: the model does not see the tool, or the command is not in the list it may call |
+| `ask` | shown to the user first — the diff, or the command line — and waits: `Apply`/`Run` or `Skip` |
+| `allow` | runs on its own |
+
+Three rules, and only three, kept by `Policy` (`tools/catalog.rs`):
+
+1. **Editing and creating files ask by default, and `allow` on them is the
+   user's call.** Rule 3 of this document said every write waits; on
+   2026-09-24, at the user's request, that became the default rather than
+   the ceiling. At `allow` the harness applies the edit as it comes
+   (`Harness::settle_or_ask`: a `write_file` on a file that exists goes by
+   the permission on editing, a new file by the one on creating), the step
+   line says `applied` after the fact, the prompt tells the model its
+   writes land without waiting, and the panel warns when it is set in a
+   directory with no `.git/`, since git is then the only way back.
+2. **Editing and creating need reading**, so turning either on turns
+   `read files` on, and turning `read files` off turns them off. Nothing
+   else is coupled: a command is a choice of its own, and `make` at `allow`
+   is the user's to make.
+3. **Nothing on is tools off.** There is no separate switch.
+
+**The catalogue** (`tools/catalog.rs`) is one `const` list of `Entry`: an
+id as it is shown, written in `tools.toml` and, for a command, called
+(`read files`, `git diff`, `ls`); a group (`Editor`, `Files`, `Git`,
+`Build`, `Network`); a `Kind` (`Read` = `read_file` + `list_dir`, `Edit`,
+`Create`, `Subfolders`, `Command`); what `Enter` turns it to (`on`: `allow`
+for what only looks, `ask` for what changes the repository, writes files,
+runs the project's own code or reaches the network); a deny list of flags;
+and one line of help. `Editor` holds moon's own three — they stay tools and
+are not turned into commands: `read_file` carries the `<file>` block, the
+range and the hash the freshness check needs, `edit_file` has no shell
+equivalent that shows a diff first, and `write_file` writes content where
+`mkdir` and `touch` make an empty folder or file. `Files` holds the
+programs that work on files, `mkdir` among them (`ask`). `Editor`
+also holds `commands in subfolders` (called `run inside subfolders` while
+it was in `Files`; the old name is still read), which is not a program:
+`off` or `allow`, never `ask`, and on, a call may carry a `dir`, a folder
+below the project root to run in, checked like any path so it can never be
+above it. The step limit is the last row of `Editor` in the panel, though
+in `tools.toml` it stays the top-level `max_steps`: it is a number, not a
+permission. The user wanted both there, with the file tools, rather than on
+the first level; the name keeps "commands" so it does not read as a limit
+on where files are read or edited. `Network` holds `curl` and
+`wget`, `ask` by default, with the flags that would send a file away
+refused (`-d/--data*`, `-F`, `-T`, `-K` for `curl`; `--post-file`, `-i`,
+`-e` for `wget`); what a model has read it can still put in a URL, which
+the `ask` shows. Nothing outside the catalogue can be named, and the
+catalogue is in the code, not in the configuration. `Agent` carries a
+`Policy` and derives its tools from it (`Agent::for_policy`: the editor's
+prompt when it may change files, the reader's otherwise).
+
+**The tool.** `run_command { command, args?, dir? }`. The description the
+model sees lists the commands that are on, and so does the prompt, with
+which of them ask; with none on the tool is not offered and the prompt says
+"no shell" as before. `prepare` (`tools/run_command.rs`) turns a call into
+an `Exec`: the tokens of `command` and `args` are matched against the ids
+that are on, longest first, so `git diff --stat` and `command: "git", args:
+["diff", "--stat"]` both work and `git status` is refused while it is off;
+every remaining token goes through a lexical check — no absolute path, no
+`~`, no drive letter, no `..` component, the value of a `--flag=value`
+included — and through the sandbox's deny rules by name, so `cat .env` and
+`git diff ../x` never start; the command's own deny list refuses the flags
+that would run something else or write somewhere (`find -exec`, `git
+--exec-path`, `git --output`, `make --eval`, `cargo --config`). The program
+is resolved on `PATH` at call time, with `PATHEXT` on Windows; the coreutils
+on Windows are looked for next to `git.exe` only (`<Git>/usr/bin`), never in
+`System32`, whose `find` is another program. `Exec.asks` is the permission,
+not the catalogue's default.
+
+**Running it.** The harness never runs a process: it hands back
+`Command::Run(Exec)` and pauses, the interface runs it on a thread of its own
+(`run_command::execute`: no shell, stdin closed, both streams read on threads
+of their own, `GIT_EDITOR=true`, no pager, no colour, killed at 60 s or when
+the user presses `Esc`), and feeds back `Event::Ran(Output)`. The model reads
+the exit code and both streams, cut at 20 kB. This keeps the loop free of I/O
+and testable with a scripted output, and keeps the interface responsive while
+`cargo test` runs. A command at `ask` is `Command::Ask(Pending::Run(exec))`:
+the same approval panel as an edit, with the line it would run, `Run` and
+`Skip`. The approval and the diff remain the security boundary for what the
+path check cannot see: the model can write a `Makefile` and then ask to run
+`make`, and both go through you — unless you set them to `allow`.
+
+**What it does not protect against**, on top of the list below: what a
+command prints is what the model reads. `grep -r x .` over a folder with a
+`.env` in it shows the model the `.env`, since the deny rules apply to the
+paths named in the arguments, not to what the program opens on its own.
+Killing the child does not kill its grandchildren (`make` spawning `cargo`).
+A write at `allow` lands with no one looking.
+
+**In the panel.** Two levels. On the first, the groups of the catalogue,
+one row each with what is on in it (`allow: git status, git diff · ask:
+git commit`, or `off`), `Enter` to open one, `←` to turn the whole of it
+off and `→` to turn it on with its defaults, and the step limit as the last
+row. Inside a group, its entries with their permission as a selector
+(`◀ allow ▶`): `←`/`→` walk `off · ask · allow`, `Enter` and `Space` go
+between off and the entry's `on`. `Esc` always saves — state, session meta
+and `tools.toml` — and inside a group also steps back out, from the groups
+also closes; there is no cancel and no other key to save. A program that is
+not installed shows `not installed` and stays off, and a group's defaults
+leave it out. The marker on the bottom row reads `⏵⏵ Read · Edit · Create ·
+4 commands`. Two levels rather than one long list because the first level is
+the overview that a flat list of thirty rows could not give, each screen
+stays short, and the catalogue can grow without lengthening either. This
+replaces the four boxes of the first design and the two-section panel that
+came between: the boxes are the `Editor` group now.
+
+**Where it lives.** `tools/catalog.rs` (`Entry`, `CATALOG`, `Policy`),
+`tools/run_command.rs`, `Tool::RunCommand`, `Pending { Edit, Run }`,
+`Agent.policy` and `Agent::system_prompt()`, `Harness::running` and
+`Harness::settle_or_ask`; in the interface, `ToolsDialog` over a `Policy`
+with its two `Level`s in `app/agent.rs`, `Action::Ran`, `App.running`, the
+groups and the group in `view/panel.rs`, the `Run` approval next to the
+diff. `moon_core::Permission` and the ids of the file capabilities
+(`moon_core::config::ids`) live in core, since the configuration and the
+file need them.
 
 ## The agent
 
@@ -300,6 +435,8 @@ does not get tools; a future `--tools` on `ask` would need a `--yes`, and that
 is exactly the flag this design refuses.
 
 ## The interface
+
+*(2026-09-24: the panel is one list of permissions now, see "Permissions and commands"; what follows is the first design, kept for the record.)*
 
 **Switch.** `/tools` opens a docked panel like the one Claude Code uses to
 set up its auto mode: a question as the title, one line on what it means,
@@ -388,6 +525,29 @@ deny           = [".git/**", ".github/workflows/**"]   # on top of the built-in 
 
 There is deliberately no `approve = "never"`, no `allow = [...]` and no
 `--yolo`. If that ever changes it is a new decision, not a flag left in.
+It changed on 2026-09-24, as a decision: `[tools.permissions]`, a table of
+`"id" = "off" | "ask" | "allow"` by the names the panel shows, says what a
+conversation starts with; the three older keys are honoured while the table
+is empty (`ToolsConfig::startup_permissions`). Edits and new files may be
+set to `allow` there too; `ask` is only the default.
+
+**`tools.toml`** (2026-09-24). What the panel sets lives in a file of its
+own next to `config.toml`: `max_steps` and a `[permissions]` table with
+every entry of the catalogue, in its group, `off` included, each with its
+help as a comment — laid out by `catalog::render_tools_file`, so the file
+is also the list of what there is. `moon config init` writes it (reading on,
+everything else off) next to `config.toml`, and `--force` rewrites both.
+The panel rewrites it whole on every `Esc` (`ToolsFile::write_text`,
+through a temporary file); moon reads it back at startup, when the panel
+opens and before every message (`App::sync_tools_file`, applied only when
+the parsed value differs from the last one seen; `ToolsFile::load` drops
+the `off` lines, so a full file and a short one read the same). A file of
+its own rather than `config.toml` because that one is a commented template
+written by hand, and rewriting it from the interface would lose the
+comments. While the file exists it wins over `[tools]` and over the
+session's meta (`tools`, `tools_edit`, `tools_create`, still written, only
+read on a resume when there is no file); a file that does not parse is
+reported and ignored, so the configuration applies until it is fixed.
 
 Sessions stay JSONL with the two record types they have. Assistant messages
 may carry `tool_calls`; tool messages carry `tool_name` / `tool_call_id`;
@@ -507,7 +667,9 @@ and is useful on its own.
 
 ## Out of scope for v1
 
-- Any shell, network or process tool. Not planned.
+- Any shell, network or process tool. Not planned. *(2026-09-24: a process
+  tool exists after all, `run_command`, limited to the catalogue; a shell
+  still does not, and still is not planned. See "Permissions and commands".)*
 - `grep` / `glob` tools: v2, read-only, same sandbox.
 - A second agent: the structure allows it; nothing needs it yet.
 - Undo of applied edits from inside moon: git is the safety net, and moon says

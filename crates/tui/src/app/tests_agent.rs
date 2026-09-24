@@ -76,7 +76,7 @@ impl ProviderFactory for FakeFactory {
     }
 }
 
-fn app_with_fake(root: &Path, script: Vec<Vec<ChatEvent>>) -> (App, Tx, Rx, Requests) {
+pub(super) fn app_with_fake(root: &Path, script: Vec<Vec<ChatEvent>>) -> (App, Tx, Rx, Requests) {
     let requests: Requests = Arc::new(Mutex::new(Vec::new()));
     let mut registry = Registry::new();
     registry.register(Box::new(FakeFactory {
@@ -99,16 +99,18 @@ fn app_with_fake(root: &Path, script: Vec<Vec<ChatEvent>>) -> (App, Tx, Rx, Requ
         cwd: "~/p".into(),
         root: root.to_path_buf(),
         state_dir: None,
+        tools_file: None,
     });
     app.loading = false;
     assert!(app.current.is_some(), "{:?}", app.items);
     (app, tx, rx, requests)
 }
 
-/// Feeds the app what the fake provider streams until nothing is streaming:
-/// the turn is over, or an edit is waiting on screen.
-async fn settle(app: &mut App, tx: &Tx, rx: &mut Rx) {
-    while app.is_streaming() {
+/// Feeds the app what the fake provider streams, and what a command of the
+/// model prints, until nothing is in flight: the turn is over, or an edit
+/// or a command is waiting on screen.
+pub(super) async fn settle(app: &mut App, tx: &Tx, rx: &mut Rx) {
+    while app.is_streaming() || app.running.is_some() {
         let a = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("the provider answers")
@@ -117,7 +119,7 @@ async fn settle(app: &mut App, tx: &Tx, rx: &mut Rx) {
     }
 }
 
-fn call(name: &str, args: serde_json::Value) -> ChatEvent {
+pub(super) fn call(name: &str, args: serde_json::Value) -> ChatEvent {
     ChatEvent::ToolCall(ToolCall {
         id: None,
         name: name.into(),
@@ -125,7 +127,7 @@ fn call(name: &str, args: serde_json::Value) -> ChatEvent {
     })
 }
 
-fn done() -> ChatEvent {
+pub(super) fn done() -> ChatEvent {
     ChatEvent::Done(Usage {
         prompt_tokens: Some(10),
         completion_tokens: Some(2),
@@ -133,18 +135,19 @@ fn done() -> ChatEvent {
     })
 }
 
-fn project() -> tempfile::TempDir {
+pub(super) fn project() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.rs"), "hi\n").unwrap();
     dir
 }
 
-fn text(spans: &[Span<'static>]) -> String {
+pub(super) fn text(spans: &[Span<'static>]) -> String {
     spans.iter().map(|s| s.content.to_string()).collect()
 }
 
 #[tokio::test]
 async fn the_switch_and_what_it_shows() {
+    use moon_agent::Category;
     let dir = project();
     let (mut app, tx, _rx) = app();
     app.root = dir.path().to_path_buf();
@@ -152,33 +155,55 @@ async fn the_switch_and_what_it_shows() {
     assert!(app.edit_mode_span().is_none());
     assert!(!text(&app.model_spans()).contains("edits"));
 
-    // `/tools` is the panel: enter on the first row ticks it, and `esc`
-    // applies it — there is no cancel
+    // `/tools` is the panel, on its groups: enter opens `Files`, enter on
+    // its first row, `read files`, turns it on; esc steps out and esc
+    // applies — there is no cancel
     type_text(&mut app, &tx, "/tools");
     app.update(key(KeyCode::Enter), &tx);
-    assert!(matches!(&app.panel, Some(Panel::Tools(d)) if !d.on));
+    assert!(
+        matches!(&app.panel, Some(Panel::Tools(d)) if d.policy.is_empty() && d.level == Level::Groups && d.row == 0)
+    );
     app.update(key(KeyCode::Enter), &tx);
-    assert!(matches!(&app.panel, Some(Panel::Tools(d)) if d.on && d.row == ToolsDialog::ON));
-    // off, the writing boxes start off too; tick them as well
+    assert!(
+        matches!(&app.panel, Some(Panel::Tools(d)) if d.level == Level::Group(Category::Editor) && d.row == 0)
+    );
+    app.update(key(KeyCode::Enter), &tx);
+    assert!(matches!(&app.panel, Some(Panel::Tools(d)) if d.policy.reads()));
+    // off, the writing rows start off too; turn them on as well: they ask
     app.update(key(KeyCode::Down), &tx);
     app.update(key(KeyCode::Enter), &tx);
     app.update(key(KeyCode::Down), &tx);
     app.update(key(KeyCode::Enter), &tx);
-    assert!(matches!(&app.panel, Some(Panel::Tools(d)) if d.on && d.edit && d.create));
+    let Some(Panel::Tools(d)) = &app.panel else {
+        panic!("expected the tools panel")
+    };
+    assert!(d.policy.reads() && d.policy.edits() && d.policy.creates());
+    assert_eq!(
+        d.policy.get(moon_core::config::ids::EDIT_FILES),
+        moon_core::Permission::Ask
+    );
     assert!(!app.tools_on);
+    app.update(key(KeyCode::Esc), &tx);
+    assert!(matches!(&app.panel, Some(Panel::Tools(d)) if d.level == Level::Groups && d.row == 0));
     app.update(key(KeyCode::Esc), &tx);
     assert!(app.panel.is_none());
     assert!(app.tools_on);
     assert!(app.harness.is_some());
     // the permanent sign, in `moon-soft` and bold, at the left of the hints
-    // row: all three boxes are on, so it lists all three
+    // row: all three are on, so it lists all three
     let mode = app.edit_mode_span().expect("edit mode indicator");
     assert_eq!(mode.content, "⏵⏵ Read · Edit · Create");
     assert_eq!(mode.style.fg, Some(app.theme.moon_soft));
     assert!(!text(&app.model_spans()).contains("edits"));
     assert!(app.hints().contains("/tools"));
     // not a git repository: said once, in the conversation, under `/tools`
-    assert!(last_answer(&app).contains("not a git repository"));
+    let answer = last_answer(&app);
+    assert!(answer.contains("not a git repository"), "{answer}");
+    assert!(
+        answer.contains("allow: read files")
+            && answer.contains("ask: edit existing files, create new files"),
+        "{answer}"
+    );
     // the agent's rules reach the system prompt
     assert!(app.system_prompt_for(&[]).unwrap().contains("no shell"));
 
@@ -190,16 +215,18 @@ async fn the_switch_and_what_it_shows() {
     assert!(app.panel.is_none());
     assert!(app.tools_on);
 
-    // unticking the box and esc turns it off
+    // `←` on `Files` turns the whole group off, editing and creating with
+    // reading: nothing on, and esc turns it off
     type_text(&mut app, &tx, "/tools");
     app.update(key(KeyCode::Enter), &tx);
-    app.update(key(KeyCode::Enter), &tx);
-    assert!(matches!(&app.panel, Some(Panel::Tools(d)) if !d.on));
+    app.update(key(KeyCode::Left), &tx);
+    assert!(matches!(&app.panel, Some(Panel::Tools(d)) if d.policy.is_empty()));
     app.update(key(KeyCode::Esc), &tx);
     assert!(app.panel.is_none());
     assert!(!app.tools_on);
     assert!(app.harness.is_none());
     assert!(app.system_prompt_for(&[]).is_none());
+    assert!(last_answer(&app).contains("tools off"));
 
     // whatever follows the command is ignored, as with `/model`
     type_text(&mut app, &tx, "/tools on");
@@ -217,65 +244,58 @@ async fn the_tools_panel_turns_it_on_and_tunes_it() {
     let Some(Panel::Tools(d)) = &app.panel else {
         panic!("expected the tools panel")
     };
-    assert_eq!(
-        (d.on, d.edit, d.create, d.rounds, d.row),
-        (false, false, false, 8, ToolsDialog::ON)
-    );
-    // space ticks the box under the cursor, ↓ walks, ←→ change the number;
-    // esc applies it all, there is no cancel and no separate confirm row
+    assert!(d.policy.is_empty());
+    assert_eq!((d.max_steps, d.row, d.level), (8, 0, Level::Groups));
+    assert_eq!(d.found.len(), moon_agent::CATALOG.len());
+    // enter opens `Editor`; space turns the row under the cursor on, ↓
+    // walks; ↑ from the top wraps to its last row, the step limit, where
+    // ←→ change the number; esc applies it all on its way back to the
+    // groups, there is no cancel and no separate confirm row
+    app.update(key(KeyCode::Enter), &tx);
     app.update(key(KeyCode::Char(' ')), &tx);
     app.update(key(KeyCode::Down), &tx);
     app.update(key(KeyCode::Char(' ')), &tx);
-    app.update(key(KeyCode::Down), &tx);
-    app.update(key(KeyCode::Down), &tx);
+    app.update(key(KeyCode::Up), &tx);
+    app.update(key(KeyCode::Up), &tx);
     app.update(key(KeyCode::Left), &tx);
     app.update(key(KeyCode::Left), &tx);
     let Some(Panel::Tools(d)) = &app.panel else {
         panic!("expected the tools panel")
     };
-    assert_eq!(
-        (d.on, d.edit, d.create, d.rounds, d.row),
-        (true, true, false, 6, ToolsDialog::ROUNDS)
+    assert!(d.policy.reads() && d.policy.edits() && !d.policy.creates());
+    assert!(d.on_steps());
+    assert_eq!(d.max_steps, 6);
+    // the groups say the number too
+    assert!(
+        d.summary(moon_agent::Category::Editor)
+            .ends_with("· 6 steps"),
+        "{}",
+        d.summary(moon_agent::Category::Editor)
     );
+    app.update(key(KeyCode::Esc), &tx);
+    assert!(matches!(&app.panel, Some(Panel::Tools(d)) if d.level == Level::Groups));
     app.update(key(KeyCode::Esc), &tx);
     assert!(app.panel.is_none());
     assert!(app.tools_on);
     let h = app.harness.as_ref().unwrap();
     assert!(!h.agent().has(moon_agent::Tool::WriteFile));
     assert_eq!(h.limits().rounds, 6);
-    assert!(last_answer(&app).contains("not create"));
-    // reopened it shows what is set; unticking the first box and esc
-    // turns it off
+    let answer = last_answer(&app);
+    assert!(
+        answer.contains("ask: edit existing files") && !answer.contains("create"),
+        "{answer}"
+    );
+    // reopened it shows what is set; `Files` off as a whole and esc turns
+    // it off
     type_text(&mut app, &tx, "/tools");
     app.update(key(KeyCode::Enter), &tx);
     assert!(
-        matches!(&app.panel, Some(Panel::Tools(d)) if d.on && d.edit && !d.create && d.rounds == 6)
+        matches!(&app.panel, Some(Panel::Tools(d)) if d.policy.reads() && d.policy.edits() && !d.policy.creates() && d.max_steps == 6)
     );
-    app.update(key(KeyCode::Char(' ')), &tx);
+    app.update(key(KeyCode::Left), &tx);
     app.update(key(KeyCode::Esc), &tx);
     assert!(!app.tools_on);
     assert!(app.harness.is_none());
-    // the number stays in range and the cursor wraps
-    let mut d = ToolsDialog {
-        on: true,
-        edit: true,
-        create: true,
-        rounds: 20,
-        row: ToolsDialog::ROUNDS,
-    };
-    d.change(5);
-    assert_eq!(d.rounds, 20);
-    d.change(-100);
-    assert_eq!(d.rounds, 1);
-    d.up();
-    assert_eq!(d.row, ToolsDialog::CREATE);
-    d.up();
-    assert_eq!(d.row, ToolsDialog::EDIT);
-    d.down();
-    d.down();
-    assert_eq!(d.row, ToolsDialog::ROUNDS);
-    d.down();
-    assert_eq!(d.row, ToolsDialog::ON);
 }
 
 #[tokio::test]
@@ -283,14 +303,16 @@ async fn read_only_is_the_reader_and_says_so() {
     let dir = project();
     let (mut app, tx, _rx) = app();
     app.root = dir.path().to_path_buf();
-    // the first box alone: the writing ones start off
+    // `read files` alone: the writing rows stay off
     type_text(&mut app, &tx, "/tools");
+    app.update(key(KeyCode::Enter), &tx);
     app.update(key(KeyCode::Enter), &tx);
     app.update(key(KeyCode::Char(' ')), &tx);
     let Some(Panel::Tools(d)) = &app.panel else {
         panic!("expected the tools panel")
     };
-    assert_eq!((d.on, d.edit, d.create), (true, false, false));
+    assert!(d.policy.reads() && !d.policy.edits() && !d.policy.creates());
+    app.update(key(KeyCode::Esc), &tx);
     app.update(key(KeyCode::Esc), &tx);
     assert!(app.tools_on);
     assert_eq!(app.tools_scope(), (false, false));
@@ -301,16 +323,23 @@ async fn read_only_is_the_reader_and_says_so() {
     // the marker, the notice and the prompt all say it only reads
     assert_eq!(app.edit_mode_span().unwrap().content, "⏵⏵ Read");
     let answer = last_answer(&app);
-    assert!(answer.contains("reads on") && answer.contains("change nothing"));
+    assert!(
+        answer.contains("allow: read files") && !answer.contains("ask:"),
+        "{answer}"
+    );
     let prompt = app.system_prompt_for(&[]).unwrap();
     assert!(prompt.contains("cannot change files") && !prompt.contains("edit_file"));
-    // and the panel, reopened, shows both boxes off; ticking `edit` back
+    // and the panel, reopened, shows the writing rows off; `edit` back on
     // gives the editor without write_file
     type_text(&mut app, &tx, "/tools");
     app.update(key(KeyCode::Enter), &tx);
-    assert!(matches!(&app.panel, Some(Panel::Tools(d)) if d.on && !d.edit && !d.create));
+    assert!(
+        matches!(&app.panel, Some(Panel::Tools(d)) if d.policy.reads() && !d.policy.edits() && !d.policy.creates())
+    );
+    app.update(key(KeyCode::Enter), &tx);
     app.update(key(KeyCode::Down), &tx);
     app.update(key(KeyCode::Char(' ')), &tx);
+    app.update(key(KeyCode::Esc), &tx);
     app.update(key(KeyCode::Esc), &tx);
     assert_eq!(app.tools_scope(), (true, false));
     assert_eq!(app.edit_mode_span().unwrap().content, "⏵⏵ Read · Edit");
@@ -335,6 +364,7 @@ fn the_configuration_turns_it_on_at_startup() {
             cwd: "~/p".into(),
             root: root.to_path_buf(),
             state_dir: None,
+            tools_file: None,
         })
     };
     let mut tools = moon_core::ToolsConfig {
@@ -504,7 +534,8 @@ async fn an_edit_waits_for_the_ok_and_is_applied() {
         panic!("expected the approval panel")
     };
     assert_eq!(a.title(), "Edit a.rs");
-    assert_eq!(a.edit.counts(), "+1 −1");
+    assert_eq!(a.info(), "+1 −1");
+    assert_eq!(a.verb(), "Apply");
     assert_eq!(a.choice, EditChoice::Apply);
     // the cursor walks the two choices; enter takes the one it is on
     app.update(key(KeyCode::Right), &tx);
@@ -675,30 +706,6 @@ async fn without_a_provider_the_turn_does_not_hang() {
     assert!(app.items.iter().any(|i| matches!(i, Item::Step(_))));
     assert!(matches!(app.items.last(), Some(Item::Error(e)) if e.contains("provider unavailable")));
     assert!(!app.turn_active());
-}
-
-#[test]
-fn the_boxes_stay_consistent() {
-    let mut d = ToolsDialog {
-        on: false,
-        edit: false,
-        create: false,
-        rounds: 8,
-        row: ToolsDialog::CREATE,
-    };
-    // creating needs reading: ticking it ticks the first box
-    d.toggle();
-    assert_eq!((d.on, d.edit, d.create), (true, false, true));
-    d.row = ToolsDialog::EDIT;
-    d.toggle();
-    assert_eq!((d.on, d.edit, d.create), (true, true, true));
-    // unticking a writing box leaves reading on
-    d.toggle();
-    assert_eq!((d.on, d.edit, d.create), (true, false, true));
-    // unticking reading takes the others with it: all off is tools off
-    d.row = ToolsDialog::ON;
-    d.toggle();
-    assert_eq!((d.on, d.edit, d.create), (false, false, false));
 }
 
 #[tokio::test]

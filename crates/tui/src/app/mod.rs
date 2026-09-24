@@ -39,9 +39,11 @@ mod tests;
 #[cfg(test)]
 mod tests_agent;
 #[cfg(test)]
+mod tests_commands;
+#[cfg(test)]
 mod tests_context;
 
-pub use agent::{Approval, EditChoice, ToolsDialog};
+pub use agent::{Approval, EditChoice, Level, ToolsDialog};
 
 pub type Tx = mpsc::UnboundedSender<Action>;
 
@@ -73,6 +75,9 @@ pub enum Action {
     PollLoaded,
     /// Answer to that question, for the model that was asked about.
     Loaded(Current, LoadedState),
+    /// A command the model asked for has finished, on its thread; the
+    /// number says which one.
+    Ran(u64, moon_agent::Output),
     Quit,
 }
 
@@ -349,6 +354,9 @@ pub struct RunOptions {
     pub root: PathBuf,
     /// State kept between runs (recent models and sessions). `None` saves nothing.
     pub state_dir: Option<PathBuf>,
+    /// Where the `/tools` panel keeps what is ticked, `tools.toml` next to
+    /// the configuration. `None` keeps nothing between runs.
+    pub tools_file: Option<PathBuf>,
 }
 
 /// Recent models and sessions shown on top of their lists, and the files
@@ -472,6 +480,14 @@ pub struct App {
     pub tools_on: bool,
     /// The loop behind `tools_on`; built when it is turned on.
     pub(crate) harness: Option<moon_agent::Harness>,
+    /// The command running off the main thread, if one is, and the number
+    /// the next one gets: a result that comes back late is told apart by it.
+    pub(crate) running: Option<agent::Running>,
+    run_seq: u64,
+    /// The panel's file, and what it said the last time it was read or
+    /// written: a change made by hand is noticed by the difference.
+    tools_file: Option<PathBuf>,
+    pub(crate) tools_seen: Option<moon_core::ToolsFile>,
 
     md: Renderer,
     cache: Vec<Option<Rendered>>,
@@ -604,6 +620,10 @@ impl App {
             loaded: LoadedState::default(),
             tools_on: false,
             harness: None,
+            running: None,
+            run_seq: 0,
+            tools_file: opts.tools_file,
+            tools_seen: None,
             md: Renderer::new(),
             cache: Vec::new(),
             cfg: opts.config,
@@ -632,7 +652,16 @@ impl App {
             }
         }
         app.load_context_file();
-        if app.cfg.tools.enabled {
+        // the panel's file, if the panel was ever closed, says how the tools
+        // start; the configuration only until then, or while the file is broken
+        let from_file = match app.sync_tools_file() {
+            Ok(applied) => applied,
+            Err(e) => {
+                app.items.push(Item::Error(e));
+                false
+            }
+        };
+        if !from_file && app.cfg.tools.enabled {
             if let Err(e) = app.enable_tools() {
                 app.items.push(Item::Error(e));
             }
@@ -790,7 +819,11 @@ impl App {
     // ----- update -----------------------------------------------------------
 
     pub fn needs_tick(&self) -> bool {
-        self.is_streaming() || self.loading || self.notice.is_some() || self.waiting_approval()
+        self.is_streaming()
+            || self.loading
+            || self.notice.is_some()
+            || self.waiting_approval()
+            || self.running.is_some()
     }
 
     pub fn is_streaming(&self) -> bool {
@@ -887,7 +920,15 @@ impl App {
             Action::ScrollBy(d) => match self.panel.as_mut() {
                 Some(Panel::Help(h)) => h.scroll_by(d),
                 Some(Panel::Approval(a)) => a.scroll_by(d),
-                Some(Panel::SessionAction { .. }) | Some(Panel::Tools(_)) => {}
+                // the wheel walks the rows, as in the lists
+                Some(Panel::Tools(t)) => {
+                    if d < 0 {
+                        t.up()
+                    } else {
+                        t.down()
+                    }
+                }
+                Some(Panel::SessionAction { .. }) => {}
                 // in the lists the wheel moves the cursor one at a time
                 Some(panel) => {
                     if let Some(p) = panel.picker_mut() {
@@ -945,6 +986,7 @@ impl App {
                 self.notify("session resumed");
             }
             Action::Notice(s) => self.notify(s),
+            Action::Ran(id, out) => self.on_ran(id, out, tx),
             // the welcome block is built on every paint: nothing to invalidate
             Action::UpdateAvailable(v) => self.update_available = Some(v),
             Action::Quit => self.should_quit = true,

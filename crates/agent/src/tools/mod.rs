@@ -1,7 +1,9 @@
-//! What an agent can do. A closed enum: there is no `bash` variant, no
-//! delete, no network, so no configuration can offer the model any of them.
-//! Every tool goes through the sandbox for its paths; the two that write
-//! only *prepare* an edit, and the harness applies it once the user says so.
+//! What an agent can do. A closed enum: no delete, no network, and no shell.
+//! `run_command` runs one of the commands of a fixed catalogue, the ones
+//! that are on in `/tools`, as a program with its arguments, never through a
+//! shell. Every tool goes through the sandbox for its paths; the two that
+//! write only *prepare* an edit, and the harness applies it once the user
+//! says so; a command set to `ask` waits the same way.
 
 use std::collections::HashMap;
 
@@ -10,15 +12,19 @@ use serde_json::Value;
 
 use crate::sandbox::{Denied, Eol, Sandbox};
 
+pub mod catalog;
 mod diff;
 pub mod edit_file;
 pub mod list_dir;
 pub mod read_file;
+pub mod run_command;
 #[cfg(test)]
 mod tests;
 pub mod write_file;
 
+pub use catalog::{Category, Entry, Kind, Policy, CATALOG};
 pub use diff::{diff, Diff, DiffKind, DiffLine};
+pub use run_command::{Exec, Output};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tool {
@@ -26,14 +32,16 @@ pub enum Tool {
     ListDir,
     EditFile,
     WriteFile,
+    RunCommand,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 4] = [
+    pub const ALL: [Tool; 5] = [
         Tool::ReadFile,
         Tool::ListDir,
         Tool::EditFile,
         Tool::WriteFile,
+        Tool::RunCommand,
     ];
 
     pub fn name(self) -> &'static str {
@@ -42,6 +50,7 @@ impl Tool {
             Tool::ListDir => "list_dir",
             Tool::EditFile => "edit_file",
             Tool::WriteFile => "write_file",
+            Tool::RunCommand => "run_command",
         }
     }
 
@@ -54,23 +63,33 @@ impl Tool {
         matches!(self, Tool::EditFile | Tool::WriteFile)
     }
 
-    /// The verb for the step line: `read`, `list`, `edit`, `write`.
+    /// The verb for the step line: `read`, `list`, `edit`, `write`, `run`.
     pub fn verb(self) -> &'static str {
         match self {
             Tool::ReadFile => "read",
             Tool::ListDir => "list",
             Tool::EditFile => "edit",
             Tool::WriteFile => "write",
+            Tool::RunCommand => "run",
         }
     }
 
-    /// What the model is told about the tool: its JSON schema.
+    /// What the model is told about the tool: its JSON schema. For
+    /// `run_command` the agent fills in the commands it allows.
     pub fn spec(self) -> ToolSpec {
         let (description, parameters) = match self {
             Tool::ReadFile => read_file::spec(),
             Tool::ListDir => list_dir::spec(),
             Tool::EditFile => edit_file::spec(),
             Tool::WriteFile => write_file::spec(),
+            Tool::RunCommand => {
+                let (d, p) = run_command::spec(&Policy::default());
+                return ToolSpec {
+                    name: self.name().to_string(),
+                    description: d,
+                    parameters: p,
+                };
+            }
         };
         ToolSpec {
             name: self.name().to_string(),
@@ -78,6 +97,14 @@ impl Tool {
             parameters,
         }
     }
+}
+
+/// What waits for the user: an edit with its diff, or a command that
+/// changes things.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pending {
+    Edit(PendingEdit),
+    Run(Exec),
 }
 
 /// Why a call did not run. The model reads the text either way; only the

@@ -27,6 +27,7 @@ fn app_at(root: std::path::PathBuf) -> App {
         cwd: "~/Towerforge/moon".into(),
         root,
         state_dir: None,
+        tools_file: None,
     })
 }
 
@@ -969,9 +970,12 @@ fn the_machine_panel_grows_a_gpu_column_and_draws_the_model_under_the_ram() {
 #[test]
 fn the_approval_panel_and_the_edits_marker() {
     use crate::app::{Approval, Panel};
-    use moon_agent::{tools, Eol, PendingEdit, Tool};
+    use moon_agent::{editor, tools, Eol, Harness, Limits, PendingEdit, Sandbox, Tool};
     let mut app = app();
     app.loading = false;
+    // the editor behind the switch: reading, editing and creating
+    let sandbox = Sandbox::new(&std::env::temp_dir(), 10_000, &[]).unwrap();
+    app.harness = Some(Harness::new(editor(), sandbox, Limits::default()));
     app.tools_on = true;
     let mut term = Terminal::new(TestBackend::new(90, 24)).unwrap();
     term.draw(|f| view(&mut app, f)).unwrap();
@@ -998,7 +1002,9 @@ fn the_approval_panel_and_the_edits_marker() {
         expect: Some(1),
         diff: tools::diff(before, after),
     };
-    app.panel = Some(Panel::Approval(Box::new(Approval::new(edit))));
+    app.panel = Some(Panel::Approval(Box::new(Approval::new(
+        moon_agent::Pending::Edit(edit),
+    ))));
     term.draw(|f| view(&mut app, f)).unwrap();
     let s = screen(&term);
     let title = s
@@ -1037,51 +1043,184 @@ fn the_approval_panel_and_the_edits_marker() {
 }
 
 #[test]
-fn the_tools_panel() {
-    use crate::app::{Panel, ToolsDialog};
+fn the_run_approval_panel() {
+    use crate::app::{Approval, Panel};
+    use moon_agent::{Exec, Pending};
     let mut app = app();
     app.loading = false;
-    app.panel = Some(Panel::Tools(ToolsDialog {
-        on: true,
-        edit: true,
-        create: false,
-        rounds: 8,
-        row: ToolsDialog::CREATE,
-    }));
+    app.tools_on = true;
+    let exec = Exec {
+        id: "git commit",
+        program: "/usr/bin/git".into(),
+        args: vec!["commit".into(), "-m".into(), "fix: a".into()],
+        dir: "/p/src".into(),
+        rel_dir: "src".into(),
+        asks: true,
+        help: "commit what is staged",
+        line: "git commit -m \"fix: a\"".into(),
+    };
+    app.panel = Some(Panel::Approval(Box::new(Approval::new(Pending::Run(exec)))));
     let mut term = Terminal::new(TestBackend::new(90, 24)).unwrap();
     term.draw(|f| view(&mut app, f)).unwrap();
     let s = screen(&term);
     let title = s
         .iter()
-        .position(|l| l.contains("Let the model use files?"))
+        .position(|l| l.contains("Run git commit"))
         .expect("title row");
-    assert!(s[title].contains("~/Towerforge/moon"), "{}", s[title]);
+    // the folder on the right, the chips say Run, the line and the help below
+    assert!(s[title].contains("in src"), "{}", s[title]);
     assert!(
-        s[title + 1].contains("only under this directory"),
+        s[title + 1].contains(" Run ") && s[title + 1].contains(" Skip "),
         "{}",
         s[title + 1]
     );
-    let row = |needle: &str| {
+    assert!(
+        s.iter().any(|l| l.contains("$ git commit -m \"fix: a\"")),
+        "{s:?}"
+    );
+    assert!(s.iter().any(|l| l.contains("in src")), "{s:?}");
+    assert!(
+        s.iter().any(|l| l.contains("commit what is staged")),
+        "{s:?}"
+    );
+    assert!(
+        s[23].contains("r run") && s[23].contains("esc cancel turn"),
+        "{}",
+        s[23]
+    );
+}
+
+#[test]
+fn the_tools_panel() {
+    use crate::app::{Level, Panel, ToolsDialog};
+    use moon_agent::{Category, Policy, CATALOG};
+    use moon_core::config::ids::{EDIT_FILES, READ_FILES};
+    use moon_core::Permission;
+    let mut app = app();
+    app.loading = false;
+    let policy = Policy::from_pairs([
+        (READ_FILES, Permission::Allow),
+        (EDIT_FILES, Permission::Ask),
+        ("git diff", Permission::Allow),
+    ]);
+    let found: Vec<bool> = CATALOG.iter().map(|e| e.id != "tree").collect();
+    app.panel = Some(Panel::Tools(ToolsDialog::new(policy, 8, found)));
+    let mut term = Terminal::new(TestBackend::new(90, 24)).unwrap();
+    term.draw(|f| view(&mut app, f)).unwrap();
+    let s = screen(&term);
+    let title = s
+        .iter()
+        .position(|l| l.contains("What may the model do?"))
+        .expect("title row");
+    assert!(s[title].contains("~/Towerforge/moon"), "{}", s[title]);
+    assert!(
+        s[title + 1].contains("off: not offered"),
+        "{}",
+        s[title + 1]
+    );
+    let row = |s: &[String], needle: &str| {
         s.iter()
             .find(|l| l.contains(needle))
             .unwrap_or_else(|| panic!("no row with {needle}: {s:?}"))
             .clone()
     };
-    assert!(row("Read files").trim_end().ends_with("[✓]"));
-    assert!(row("Edit existing files").trim_end().ends_with("[✓]"));
-    let create = row("Create new files");
+    // the groups alone, each with what is on in it; `Editor` says the
+    // step limit too
+    let editor = row(&s, " Editor ");
     assert!(
-        create.starts_with(" ❯ ") && create.trim_end().ends_with("[ ]"),
-        "{create}"
+        editor.starts_with(" ❯ ")
+            && editor.contains("▸")
+            && editor.contains("allow: read files · ask: edit existing files · 8 steps"),
+        "{editor}"
     );
-    assert!(row("Max steps per message").trim_end().ends_with("◀ 8 ▶"));
-    // the line under the rows explains the one the cursor is on
-    assert!(s.iter().any(|l| l.contains("proposes a new file")), "{s:?}");
-    assert!(!s.iter().any(|l| l.contains("before it has to answer")));
-    assert!(!s.iter().any(|l| l.contains("Continue")), "{s:?}");
+    assert!(row(&s, " Files ").contains("off"), "{s:?}");
+    assert!(row(&s, " Git ").contains("allow: git diff"), "{s:?}");
+    assert!(row(&s, " Build ").contains("off"), "{s:?}");
+    assert!(row(&s, " Network ").contains("off"), "{s:?}");
     assert!(
-        s[23].contains("enter tick") && s[23].contains("esc save"),
+        !s.iter()
+            .any(|l| l.contains("max steps") || l.contains("subfolders")),
+        "{s:?}"
+    );
+    assert!(!s.iter().any(|l| l.contains("◀ allow ▶")), "{s:?}");
+    assert!(
+        s[23].contains("enter open") && s[23].contains("esc save"),
         "{}",
         s[23]
     );
+    // inside `Files`, on `cat`: the title says where, the rows carry the
+    // selector, and the editor's own are not there
+    let Some(Panel::Tools(d)) = app.panel.as_mut() else {
+        panic!("the tools panel is open")
+    };
+    d.go_to("cat");
+    assert_eq!(d.level, Level::Group(Category::Files));
+    term.draw(|f| view(&mut app, f)).unwrap();
+    let s = screen(&term);
+    let title = s
+        .iter()
+        .position(|l| l.contains("What may the model do? › Files"))
+        .expect("title row");
+    assert!(
+        s[title + 1].contains("programs that work on files"),
+        "{}",
+        s[title + 1]
+    );
+    let cat = row(&s, " cat ");
+    assert!(
+        cat.starts_with(" ❯ ") && cat.contains("◀  off  ▶") && cat.contains("print a file"),
+        "{cat}"
+    );
+    assert!(row(&s, " ls ").contains("◀  off  ▶"), "{s:?}");
+    assert!(!s.iter().any(|l| l.contains("subfolders")), "{s:?}");
+    assert!(
+        !s.iter()
+            .any(|l| l.contains("read files") || l.contains("git diff")),
+        "{s:?}"
+    );
+    assert!(s[23].contains("esc save & back"), "{}", s[23]);
+    // `tree`, missing on this machine, says so
+    let Some(Panel::Tools(d)) = app.panel.as_mut() else {
+        panic!("the tools panel is open")
+    };
+    d.go_to("tree");
+    term.draw(|f| view(&mut app, f)).unwrap();
+    let s = screen(&term);
+    let tree = row(&s, " tree ");
+    assert!(
+        tree.starts_with(" ❯ ") && tree.contains("not installed"),
+        "{tree}"
+    );
+    // inside `Editor`: the three of moon's own, with their permission
+    let Some(Panel::Tools(d)) = app.panel.as_mut() else {
+        panic!("the tools panel is open")
+    };
+    d.go_to(EDIT_FILES);
+    term.draw(|f| view(&mut app, f)).unwrap();
+    let s = screen(&term);
+    assert!(s.iter().any(|l| l.contains("› Editor")), "{s:?}");
+    let read = row(&s, "read files");
+    assert!(
+        read.contains("◀ allow ▶") && read.contains("open and list files"),
+        "{read}"
+    );
+    let edit = row(&s, "edit existing files");
+    assert!(
+        edit.starts_with(" ❯ ") && edit.contains("◀  ask  ▶") && edit.contains("apply or skip"),
+        "{edit}"
+    );
+    assert!(!s.iter().any(|l| l.contains(" ls ")), "{s:?}");
+    // where commands run, and the step limit last, lined up with the rest
+    let sub = row(&s, "commands in subfolders");
+    assert!(
+        sub.contains("◀  off  ▶") && sub.contains("never above it"),
+        "{sub}"
+    );
+    let steps = row(&s, "max steps per message");
+    assert!(steps.contains("◀   8   ▶"), "{steps}");
+    assert_eq!(sub.find('◀'), steps.find('◀'), "{sub}\n{steps}");
+    assert_eq!(read.find('◀'), steps.find('◀'), "{read}\n{steps}");
+    let at = |needle: &str| s.iter().position(|l| l.contains(needle)).unwrap();
+    assert!(at("create new files") < at("commands in subfolders"));
+    assert!(at("commands in subfolders") < at("max steps per message"));
 }

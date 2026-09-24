@@ -82,7 +82,7 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum ConfigCmd {
-    /// Write a commented configuration file
+    /// Write the commented configuration and tools.toml next to it
     Init {
         /// Overwrite if it already exists
         #[arg(long)]
@@ -166,6 +166,9 @@ async fn main() -> anyhow::Result<()> {
                 cwd,
                 root,
                 state_dir: Some(paths.state_dir.clone()),
+                tools_file: config_path
+                    .parent()
+                    .map(|d| d.join(moon_core::ToolsFile::FILE)),
             })
             .await
         }
@@ -222,16 +225,61 @@ fn shorten_home(p: &std::path::Path) -> String {
     }
 }
 
+/// `moon config init`: the commented configuration, and `tools.toml` next
+/// to it with the whole catalogue, reading on and everything else off. A
+/// file that is there is left alone unless `force`, and said so; nothing
+/// written at all is an error.
+fn init_files(config: &std::path::Path, force: bool) -> anyhow::Result<Vec<String>> {
+    let tools = config
+        .parent()
+        .map(|d| d.join(moon_core::ToolsFile::FILE))
+        .ok_or_else(|| anyhow!("{} has no folder", config.display()))?;
+    let mut said = Vec::new();
+    let mut wrote = false;
+    if config.exists() && !force {
+        said.push(format!(
+            "{} already exists: left as it is",
+            config.display()
+        ));
+    } else {
+        Config::write_template(config, true)?;
+        said.push(format!("configuration written to {}", config.display()));
+        wrote = true;
+    }
+    if tools.exists() && !force {
+        said.push(format!("{} already exists: left as it is", tools.display()));
+    } else {
+        let policy = moon_agent::Policy::from_pairs([(
+            moon_core::config::ids::READ_FILES,
+            moon_core::Permission::Allow,
+        )]);
+        let text = moon_agent::catalog::render_tools_file(&policy, 8);
+        moon_core::ToolsFile::write_text(&tools, &text)?;
+        said.push(format!("tools written to {}", tools.display()));
+        wrote = true;
+    }
+    if !wrote {
+        bail!("{} (use --force to overwrite both)", said.join("; "));
+    }
+    Ok(said)
+}
+
 fn config_cmd(action: &ConfigCmd, path: &std::path::Path, paths: &Paths) -> anyhow::Result<()> {
     match action {
         ConfigCmd::Init { force } => {
-            Config::write_template(path, *force)
-                .map_err(|e| anyhow!("{e} (use --force to overwrite)"))?;
-            println!("configuration written to {}", path.display());
+            for line in init_files(path, *force)? {
+                println!("{line}");
+            }
             Ok(())
         }
         ConfigCmd::Path => {
             println!("{}", path.display());
+            if let Some(dir) = path.parent() {
+                println!(
+                    "tools:    {}",
+                    dir.join(moon_core::ToolsFile::FILE).display()
+                );
+            }
             println!("sessions: {}", paths.sessions_dir().display());
             println!("log:      {}", paths.log_file().display());
             Ok(())
@@ -622,4 +670,46 @@ fn sessions_list(store: Option<&SessionStore>, paths: &Paths) -> anyhow::Result<
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_init_writes_both_files_and_leaves_what_is_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("moon").join("config.toml");
+        let tools = dir.path().join("moon").join("tools.toml");
+        let said = init_files(&config, false).unwrap();
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(config.exists() && tools.exists());
+        // the tools file lists the whole catalogue, reading on
+        let text = std::fs::read_to_string(&tools).unwrap();
+        for e in moon_agent::CATALOG {
+            assert!(text.contains(&format!("\"{}\"", e.id)), "{}", e.id);
+        }
+        let back = moon_core::ToolsFile::load(&tools).unwrap().unwrap();
+        assert_eq!(back.permissions.len(), 1);
+        assert_eq!(
+            back.permissions.get(moon_core::config::ids::READ_FILES),
+            Some(&moon_core::Permission::Allow)
+        );
+        // again: both are there, nothing is written, and it says how to
+        std::fs::write(&tools, "max_steps = 3\n").unwrap();
+        let err = init_files(&config, false).unwrap_err().to_string();
+        assert!(err.contains("--force"), "{err}");
+        assert_eq!(std::fs::read_to_string(&tools).unwrap(), "max_steps = 3\n");
+        // one missing: that one is written, the other left
+        std::fs::remove_file(&config).unwrap();
+        let said = init_files(&config, false).unwrap();
+        assert!(said[0].starts_with("configuration written"), "{said:?}");
+        assert!(said[1].contains("left as it is"), "{said:?}");
+        assert_eq!(std::fs::read_to_string(&tools).unwrap(), "max_steps = 3\n");
+        // force: both rewritten
+        init_files(&config, true).unwrap();
+        assert!(std::fs::read_to_string(&tools)
+            .unwrap()
+            .contains("[permissions]"));
+    }
 }

@@ -7,8 +7,9 @@
 //! - `agents/`: who talks to the model. A prompt and a set of tools: the
 //!   `editor`, and the `reader` that only looks.
 //! - `tools/`: what an agent can do. A closed enum: `read_file`, `list_dir`,
-//!   `edit_file`, `write_file`. There is no shell tool, so nothing can turn
-//!   one on.
+//!   `edit_file`, `write_file` and `run_command`, which runs one of the
+//!   commands of a fixed catalogue, the ones ticked in `/tools`, with no
+//!   shell in between.
 //! - `sandbox/`: the boundary. Every tool turns the model's string into a
 //!   path through it, and the path stays under the start-up directory.
 //!
@@ -22,4 +23,7 @@ pub mod tools;
 pub use agents::{editor, editor_with, reader, Agent};
 pub use harness::{calls_in_text, Command, Event, Harness, Limits, Outcome, Step, Stop, Verdict};
 pub use sandbox::{Denied, Eol, Sandbox};
-pub use tools::{Diff, DiffKind, DiffLine, PendingEdit, Tool};
+pub use tools::{
+    catalog, run_command, Category, Diff, DiffKind, DiffLine, Entry, Exec, Kind, Output, Pending,
+    PendingEdit, Policy, Tool, CATALOG,
+};

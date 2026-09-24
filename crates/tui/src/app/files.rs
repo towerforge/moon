@@ -44,7 +44,7 @@ impl App {
         match (&self.harness, self.tools_on) {
             (Some(h), true) => Some(match base {
                 Some(b) => format!("{b}\n\n{}", h.prompt()),
-                None => h.prompt().to_string(),
+                None => h.prompt(),
             }),
             _ => base,
         }
@@ -437,7 +437,7 @@ impl App {
             (Some(h), true) => format!(
                 "tools: {} · root {} · {}",
                 h.agent()
-                    .tools
+                    .tools()
                     .iter()
                     .map(|t| t.name())
                     .collect::<Vec<_>>()
@@ -451,6 +451,20 @@ impl App {
             ),
             _ => "tools: off · /tools turns them on".into(),
         });
+        if self.tools_on {
+            let policy = self.policy();
+            for p in [moon_core::Permission::Allow, moon_core::Permission::Ask] {
+                let names: Vec<&str> = policy
+                    .entries()
+                    .into_iter()
+                    .filter(|(_, x)| *x == p)
+                    .map(|(e, _)| e.id)
+                    .collect();
+                if !names.is_empty() {
+                    lines.push(format!("  {}: {}", p.as_str(), names.join(", ")));
+                }
+            }
+        }
         let live = match self.read_live() {
             Ok(l) => l,
             Err(e) => {

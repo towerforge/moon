@@ -17,6 +17,7 @@ pub(super) fn app() -> (App, Tx, mpsc::UnboundedReceiver<Action>) {
         cwd: "~/x".into(),
         root: std::env::temp_dir(),
         state_dir: None,
+        tools_file: None,
     });
     (app, tx, rx)
 }
@@ -91,6 +92,7 @@ fn config_note_says_where_the_file_is() {
         cwd: "~/x".into(),
         root: std::env::temp_dir(),
         state_dir: None,
+        tools_file: None,
     });
     assert_eq!(
         loaded.config_note(),

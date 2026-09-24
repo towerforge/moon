@@ -29,6 +29,9 @@ impl App {
     }
 
     pub(super) fn send_message(&mut self, text: String, tx: &Tx) {
+        // the panel's file may have been edited by hand since: the message
+        // goes out with what it says now
+        self.reload_tools_file();
         if self.turn_active() {
             self.notify("wait for the reply to finish, or press esc to cancel it");
             self.input.set_text(&text);

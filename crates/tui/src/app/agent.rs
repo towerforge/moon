@@ -195,10 +195,14 @@ impl App {
             }
         }
         if !self.root.join(".git").exists() {
-            self.push_item(Item::Info(
-                "✎ edits on · not a git repository: moon cannot undo what you apply".into(),
-            ));
-            self.follow = true;
+            let warn = "✎ edits on · not a git repository: moon cannot undo what you apply";
+            // from `/tools`, under the command; from the configuration, on its own
+            if self.echo.is_some() {
+                self.notify(warn);
+            } else {
+                self.push_item(Item::Info(warn.into()));
+                self.follow = true;
+            }
         }
         self.update_session_meta();
         Ok(())

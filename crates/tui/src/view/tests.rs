@@ -397,6 +397,16 @@ fn machine_readings_at_the_bottom_right() {
         .push(Sample::new(34.0, 18 << 30, 32 << 30, 1288490189));
     let h = hints_at(&mut app, 130);
     assert!(h.ends_with("· ram 56% ▲75 · swap 1.2G"), "{h}");
+    // and the gpu, with a card to read, between the ram and the swap
+    app.sys
+        .push(Sample::new(34.0, 18 << 30, 32 << 30, 1288490189).with_gpu(6 << 30, 8 << 30));
+    let h = hints_at(&mut app, 130);
+    assert!(
+        h.ends_with("· ram 56% ▲75 · gpu 75% ▲75 · swap 1.2G"),
+        "{h}"
+    );
+    let h = hints_at(&mut app, 100);
+    assert!(h.ends_with("· ram 56% · gpu 75% · swap 1.2G"), "{h}");
 }
 
 #[test]
@@ -879,6 +889,81 @@ fn panel_de_la_maquina_con_braille() {
     // esc closes it and the box comes back
     app.update(key(crossterm::event::KeyCode::Esc), &tx);
     assert!(app.panel.is_none());
+}
+
+#[test]
+fn the_machine_panel_grows_a_gpu_column_and_draws_the_model_under_the_ram() {
+    use crate::app::{LoadedState, Panel};
+    use crate::sysmon::Sample;
+    use moon_core::LoadedModel;
+    use std::time::{Duration, Instant};
+    let mut app = app();
+    app.loading = false;
+    let tx = tx_dummy();
+    // a 12G model, 8G of it in an 8G card: 4G in ram, a third on the cpu
+    app.loaded = LoadedState::Loaded(LoadedModel {
+        id: "m".into(),
+        size_bytes: 12 << 30,
+        size_vram_bytes: 8 << 30,
+        context_length: None,
+        expires_at: None,
+    });
+    let base = Instant::now() - Duration::from_secs(60);
+    for i in 0..12u64 {
+        app.sys.push_at(
+            base + Duration::from_secs(i * 5),
+            Sample::new(20.0, 16 << 30, 32 << 30, 0)
+                .with_model(4 << 30, false)
+                .with_gpu(6 << 30, 8 << 30),
+        );
+    }
+    for c in "/machine".chars() {
+        app.update(key(crossterm::event::KeyCode::Char(c)), &tx);
+    }
+    app.update(key(crossterm::event::KeyCode::Enter), &tx);
+    assert!(matches!(app.panel, Some(Panel::Machine)));
+
+    let mut term = Terminal::new(TestBackend::new(78, 24)).unwrap();
+    term.draw(|f| view(&mut app, f)).unwrap();
+    let rows = screen(&term);
+    let s = rows.join("\n");
+    // three headings on one row, cpu · ram · gpu, with a rule between each two
+    let head_y = rows.iter().position(|r| r.contains("gpu")).unwrap();
+    let head = &rows[head_y];
+    assert_eq!(head.matches('│').count(), 2, "{head}");
+    let (c, r, g) = (
+        head.find("cpu").unwrap(),
+        head.find("ram").unwrap(),
+        head.find("gpu").unwrap(),
+    );
+    assert!(c < r && r < g, "{head}");
+    assert!(head.contains("75%"), "{head}");
+    // at 78 columns the totals do not fit next to the headings: they go
+    // under the plots, with the swap and the model, marked as the band
+    assert!(
+        s.contains("ram 16.0 / 32.0G · gpu 6.0 / 8.0G · no swap · ▮ 12.0G loaded · 33% on cpu"),
+        "{s}"
+    );
+    // the model's share is a band along the floor of the ram plot, in
+    // ink-muted, under the ram trace in moon-soft; the gpu trace goes in ink
+    let buf = term.backend().buffer();
+    let rule1 = head.chars().position(|c| c == '│').unwrap() as u16;
+    let rule2 = head.chars().count() - 1 - head.chars().rev().position(|c| c == '│').unwrap();
+    let rule2 = rule2 as u16;
+    let floor = head_y as u16 + 6;
+    let colors = |cols: std::ops::Range<u16>, y: u16| -> Vec<Option<ratatui::style::Color>> {
+        cols.filter(|x| buf[(*x, y)].symbol() != " ")
+            .map(|x| buf[(x, y)].style().fg)
+            .collect()
+    };
+    let ram_floor = colors(rule1 + 1..rule2, floor);
+    assert!(ram_floor.contains(&Some(app.theme.ink_muted)), "{s}");
+    let ram_above = colors(rule1 + 1..rule2, floor - 2);
+    assert!(ram_above.contains(&Some(app.theme.moon_soft)), "{s}");
+    assert!(!ram_above.contains(&Some(app.theme.ink_muted)), "{s}");
+    let gpu_floor = colors(rule2 + 1..78, floor);
+    assert!(gpu_floor.contains(&Some(app.theme.ink)), "{s}");
+    assert!(!gpu_floor.contains(&Some(app.theme.moon_soft)), "{s}");
 }
 
 #[test]

@@ -15,8 +15,7 @@ impl App {
                     self.registry.disabled(),
                     self.default_provider.as_deref(),
                 );
-                self.push_item(Item::Info(text));
-                self.follow = true;
+                self.notify(text);
             }
             Command::Provider(Some(id)) => {
                 if self.registry.has(&id) {
@@ -174,7 +173,10 @@ impl App {
     pub(super) fn drop_trailing_non_messages(&mut self) {
         while matches!(
             self.items.last(),
-            Some(Item::Error(_)) | Some(Item::Info(_)) | Some(Item::Step(_))
+            Some(Item::Error(_))
+                | Some(Item::Info(_))
+                | Some(Item::Step(_))
+                | Some(Item::Command { .. })
         ) {
             self.pop_item();
         }

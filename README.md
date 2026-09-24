@@ -184,11 +184,13 @@ qwen2.5-coder:14b · 12.1G · cpu 34% ▲61 · ram 57% ▲75
 - `12.1G` is what the model takes in memory: weights plus the context cache, so it depends on `num_ctx` as much as on the model. If it is there, the model is loaded. If it is missing, the next request pays the loading time. Only Ollama can report this.
 - If the model does not fit in the GPU, `30% cpu` appears in bold: that is when generation crawls.
 - `cpu` and `ram` are sampled every 5 seconds, and twice a second while the model is thinking or answering or the `/machine` panel is open. After `▲`, the peak of the last 3 minutes. `swap 1.2G` appears only when swap is in use.
+- On a machine with a graphics card of its own, `gpu 78% ▲90` follows: its memory, read through NVML on NVIDIA (the library behind `nvidia-smi`, if it is installed) and through the `amdgpu` driver on AMD. On a Mac there is no such line: the GPU shares the RAM, which is already there.
+- On Linux, `ram` counts the loaded model in. The kernel files a model mapped from disk under cache and leaves it out of what it calls used, so `free` and `htop` can show a machine half empty with a 20 GB model on it; moon adds what the model keeps in RAM (from Ollama's `/api/ps`) so the number means what you expect. macOS already counts it.
 - Below 120 columns the peaks and the model size go; below 90, the whole block. `system_stats = false` turns the machine readings off.
 
 `/context` prints the same in gigabytes, with the split between weights and context cache and how long until Ollama unloads the model.
 
-`/machine` opens the same readings as a drawing: the panel splits down the middle, cpu on the left and ram on the right, each filled in braille — 2×4 dots per cell — from the curve down. The window is the one the sampler keeps, so the plot fills from the right as samples pile up; under it go swap and what the loaded model takes. `Esc` closes it.
+`/machine` opens the same readings as a drawing: the panel splits in columns, cpu then ram, and gpu as a third one on a machine with a card, each filled in braille — 2×4 dots per cell — from the curve down. Under the ram curve, in grey, the share of it that is the loaded model, so you see how much room is the model's and how much is everything else. The window is the one the sampler keeps, so the plot fills from the right as samples pile up; under it go the totals, swap and what the loaded model takes. `Esc` closes it.
 
 ### Slash commands
 
@@ -211,7 +213,7 @@ Type `/` and the commands that match appear over the box, drawn like the panel: 
 | `/files` | attached files: see what they cost, detach them and add more (also `Ctrl+F`) |
 | `/tools` | the model using files: a panel to turn it on and off, decide whether it may only read, also edit or also create, and how many rounds a turn gets |
 | `/context` | what the model sees: context file, attached files, token budget, machine |
-| `/machine` | cpu, ram and swap drawn over the last 3 minutes |
+| `/machine` | cpu, ram, gpu and swap drawn over the last 3 minutes |
 | `/help` | commands and keys, in a scrollable panel |
 | `/quit` | quit |
 

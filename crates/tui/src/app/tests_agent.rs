@@ -12,7 +12,7 @@ use moon_core::{
 };
 use serde_json::json;
 
-use super::tests::{app, key, type_text};
+use super::tests::{app, key, last_answer, type_text};
 use super::*;
 
 type Rx = mpsc::UnboundedReceiver<Action>;
@@ -177,8 +177,8 @@ async fn the_switch_and_what_it_shows() {
     assert_eq!(mode.style.fg, Some(app.theme.moon_soft));
     assert!(!text(&app.model_spans()).contains("edits"));
     assert!(app.hints().contains("/tools"));
-    // not a git repository: said once, in the conversation
-    assert!(matches!(app.items.last(), Some(Item::Info(s)) if s.contains("not a git repository")));
+    // not a git repository: said once, in the conversation, under `/tools`
+    assert!(last_answer(&app).contains("not a git repository"));
     // the agent's rules reach the system prompt
     assert!(app.system_prompt_for(&[]).unwrap().contains("no shell"));
 
@@ -243,10 +243,7 @@ async fn the_tools_panel_turns_it_on_and_tunes_it() {
     let h = app.harness.as_ref().unwrap();
     assert!(!h.agent().has(moon_agent::Tool::WriteFile));
     assert_eq!(h.limits().rounds, 6);
-    assert!(app
-        .notice
-        .as_ref()
-        .is_some_and(|(n, _)| n.contains("not create")));
+    assert!(last_answer(&app).contains("not create"));
     // reopened it shows what is set; unticking the first box and esc
     // turns it off
     type_text(&mut app, &tx, "/tools");
@@ -303,10 +300,8 @@ async fn read_only_is_the_reader_and_says_so() {
     assert_eq!(h.specs().len(), 2);
     // the marker, the notice and the prompt all say it only reads
     assert_eq!(app.edit_mode_span().unwrap().content, "⏵⏵ Read");
-    assert!(app
-        .notice
-        .as_ref()
-        .is_some_and(|(n, _)| n.contains("reads on") && n.contains("change nothing")));
+    let answer = last_answer(&app);
+    assert!(answer.contains("reads on") && answer.contains("change nothing"));
     let prompt = app.system_prompt_for(&[]).unwrap();
     assert!(prompt.contains("cannot change files") && !prompt.contains("edit_file"));
     // and the panel, reopened, shows both boxes off; ticking `edit` back
@@ -420,10 +415,12 @@ async fn a_turn_reads_a_file_and_answers() {
         .iter()
         .map(|l| l.to_string())
         .collect();
-    assert!(
-        shown.iter().any(|l| l.contains("· read  a.rs")),
-        "{shown:?}"
-    );
+    let at = shown
+        .iter()
+        .position(|l| l.contains("  ⎿  read  a.rs"))
+        .expect("step line");
+    // it hangs from the request, with no blank row between
+    assert!(shown[at - 1].starts_with("▌ "), "{shown:?}");
     assert!(!shown.iter().any(|l| l.contains("<file")), "{shown:?}");
 
     // `/undo` takes the whole turn away, not just the last reply
@@ -461,7 +458,7 @@ async fn a_call_written_as_text_runs_all_the_same() {
         .collect();
     assert!(!shown.iter().any(|l| l.contains("\"name\"")), "{shown:?}");
     assert!(
-        shown.iter().any(|l| l.contains("· read  a.rs")),
+        shown.iter().any(|l| l.contains("  ⎿  read  a.rs")),
         "{shown:?}"
     );
     assert_eq!(app.messages().next_back().unwrap().content, "it says hi");
@@ -636,7 +633,7 @@ async fn a_refused_path_is_reported_and_the_turn_goes_on() {
     assert!(
         shown
             .iter()
-            .any(|l| l.contains("✗ read  ../outside.txt") && l.contains("outside the project")),
+            .any(|l| l.contains("✗ read  ../outside.txt · ") && l.contains("outside the project")),
         "{shown:?}"
     );
     assert_eq!(app.messages().next_back().unwrap().content, "sorry");
@@ -702,4 +699,28 @@ fn the_boxes_stay_consistent() {
     d.row = ToolsDialog::ON;
     d.toggle();
     assert_eq!((d.on, d.edit, d.create), (false, false, false));
+}
+
+#[tokio::test]
+async fn a_failed_step_says_why_on_the_same_line() {
+    let (mut app, _tx, _rx) = app();
+    app.items.clear();
+    app.push_item(Item::Step(moon_agent::Step {
+        tool: moon_agent::Tool::EditFile,
+        path: "a.rs".into(),
+        added: 0,
+        removed: 0,
+        outcome: moon_agent::Outcome::Failed("`a.rs` was not read".into()),
+    }));
+    let shown: Vec<String> = app
+        .visible_lines(80, 40)
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    assert!(
+        shown
+            .iter()
+            .any(|l| l == "  ⎿  ✗ edit  a.rs · `a.rs` was not read"),
+        "{shown:?}"
+    );
 }

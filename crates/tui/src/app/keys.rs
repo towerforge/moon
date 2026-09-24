@@ -276,7 +276,15 @@ impl App {
         };
         match outcome {
             Outcome::Nothing => {}
-            Outcome::Close => self.panel = None,
+            Outcome::Close => {
+                // `/model` closed without picking: it says which one stays
+                if matches!(self.panel.take(), Some(Panel::Models(_))) && self.echo.is_some() {
+                    if let Some(c) = &self.current {
+                        let q = c.qualified();
+                        self.notify(format!("kept model as {q}"));
+                    }
+                }
+            }
             Outcome::Choose => match self.panel.take() {
                 Some(Panel::Models(p)) => {
                     if let Some(it) = p.current() {
@@ -545,10 +553,15 @@ impl App {
             self.history.push(text.clone());
         }
         if text.starts_with('/') {
+            // mid-turn the reply grows on the last item: the answer goes to the bar
+            if !self.turn_active() {
+                self.echo = Some((text.clone(), Vec::new()));
+            }
             match commands::parse(&text) {
                 Ok(cmd) => self.run_command(cmd, tx),
                 Err(e) => self.notify(e),
             }
+            self.settle_echo();
         } else {
             self.send_message(text, tx);
         }

@@ -93,8 +93,15 @@ pub enum Item {
     Message(Message),
     Error(String),
     Info(String),
-    /// What a tool did, one line: `· read src/a.rs`, `✎ edit src/a.rs · +3 −1 · applied`.
+    /// What a tool did, one line hanging from the request: `⎿  read  src/a.rs`,
+    /// `⎿  ✎ edit  src/a.rs  +3 −1  applied`.
     Step(moon_agent::Step),
+    /// A slash command as it was typed, with what it answered underneath:
+    /// `▌ /model` and `⎿  set model to ollama/llama3`.
+    Command {
+        input: String,
+        output: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -448,6 +455,9 @@ pub struct App {
     input_drag: bool,
     pub selection: Option<Selection>,
     pub notice: Option<(String, Instant)>,
+    /// The slash command in progress and what it has answered so far: it
+    /// goes into the conversation once its panel, if any, is closed.
+    pub echo: Option<(String, Vec<String>)>,
     pub should_quit: bool,
     ctrl_c_at: Option<Instant>,
     pub spinner: usize,
@@ -585,6 +595,7 @@ impl App {
             input_drag: false,
             selection: None,
             notice: None,
+            echo: None,
             should_quit: false,
             ctrl_c_at: None,
             spinner: 0,
@@ -786,13 +797,42 @@ impl App {
         matches!(self.gen, Generation::Streaming { .. })
     }
 
+    /// A short answer. While a slash command is being answered and no panel
+    /// is open it goes under the command, in the conversation; otherwise, to
+    /// the status bar for a while.
     pub fn notify(&mut self, text: impl Into<String>) {
-        self.notice = Some((text.into(), Instant::now()));
+        let text = text.into();
+        match self.echo.as_mut() {
+            Some((_, output)) if self.panel.is_none() => output.push(text),
+            _ => self.notice = Some((text, Instant::now())),
+        }
+    }
+
+    /// Closes the command in progress once it has no panel open: into the
+    /// conversation if it answered something. Not in the middle of a turn,
+    /// whose reply grows on the last item: then the answer goes to the bar.
+    pub(super) fn settle_echo(&mut self) {
+        if self.panel.is_some() {
+            return;
+        }
+        let Some((input, output)) = self.echo.take() else {
+            return;
+        };
+        if output.is_empty() {
+            return;
+        }
+        if self.turn_active() {
+            self.notice = Some((output.join(" · "), Instant::now()));
+            return;
+        }
+        self.push_item(Item::Command { input, output });
+        self.follow = true;
     }
 
     pub fn update(&mut self, action: Action, tx: &Tx) {
         let was_streaming = self.is_streaming();
         self.apply(action, tx);
+        self.settle_echo();
         let streaming = self.is_streaming();
         // the machine is watched more closely while the model thinks or
         // replies, and while the panel that draws it is open: at the idle
@@ -826,7 +866,12 @@ impl App {
                     }
                 }
             }
-            Action::SysSample(s) => self.sys.push(s),
+            // the model's share in RAM rides along, from the last `/api/ps`
+            Action::SysSample(s) => {
+                let model = crate::sysmon::model_in_ram(&self.loaded);
+                self.sys
+                    .push(s.with_model(model, crate::sysmon::MODEL_COUNTS_AS_CACHE));
+            }
             // during generation the figure does not change: wait for the end;
             // a provider that cannot tell is not asked again
             Action::PollLoaded => {

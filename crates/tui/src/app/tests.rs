@@ -21,6 +21,18 @@ pub(super) fn app() -> (App, Tx, mpsc::UnboundedReceiver<Action>) {
     (app, tx, rx)
 }
 
+/// What the last slash command answered in the conversation, one line.
+pub(super) fn last_answer(app: &App) -> String {
+    app.items
+        .iter()
+        .rev()
+        .find_map(|it| match it {
+            Item::Command { output, .. } => Some(output.join("\n")),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 pub(super) fn key(code: KeyCode) -> Action {
     Action::Key(KeyEvent::new(code, KeyModifiers::NONE))
 }
@@ -95,12 +107,27 @@ async fn basic_commands() {
     app.update(key(KeyCode::Esc), &tx);
     assert!(app.panel.is_none());
 
+    // a command with no answer leaves nothing in the conversation
+    assert!(!app
+        .items
+        .iter()
+        .any(|it| matches!(it, Item::Command { .. })));
+
     type_text(&mut app, &tx, "/nada");
     app.update(key(KeyCode::Enter), &tx);
-    assert!(app
-        .notice
-        .as_ref()
-        .is_some_and(|(n, _)| n.contains("unknown")));
+    // the answer hangs under the command, in the conversation
+    assert!(matches!(app.items.last(), Some(Item::Command { input, .. }) if input == "/nada"));
+    assert!(last_answer(&app).contains("unknown"));
+    assert!(app.notice.is_none());
+    let width = 40;
+    let _ = app.visible_lines(width, 40);
+    let lines: Vec<String> = app
+        .doc_lines(width, 0, 200)
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    let at = lines.iter().position(|l| l == "▌ /nada").unwrap();
+    assert!(lines[at + 1].starts_with("  ⎿  unknown"));
 
     type_text(&mut app, &tx, "/params temperature=0.3");
     app.update(key(KeyCode::Enter), &tx);
@@ -835,6 +862,7 @@ async fn mouse_selection() {
     app.loading = false;
     type_text(&mut app, &tx, "/new"); // with no providers, App::new leaves an error in the conversation
     app.update(key(KeyCode::Enter), &tx);
+    app.items.clear(); // and `/new` leaves itself, with its answer
     app.push_item(Item::Info("one two four".into()));
     app.push_item(Item::Info("second entry".into()));
     let conv = ratatui::layout::Rect::new(0, 0, 40, 12);
@@ -946,4 +974,24 @@ async fn the_new_version_notice_shows_in_the_welcome() {
     assert!(out.contains("moon update"), "{out}");
     // the block grows by that one line and nothing else moves
     assert_eq!(app.welcome_lines().len(), before + 1);
+}
+
+#[tokio::test]
+async fn model_picker_closed_says_which_model_stays() {
+    let (mut app, tx, _rx) = app();
+    app.current = Some(Current {
+        provider: "ollama".into(),
+        model: "llama3".into(),
+    });
+    type_text(&mut app, &tx, "/model");
+    app.update(key(KeyCode::Enter), &tx);
+    assert!(matches!(app.panel, Some(Panel::Models(_))));
+    // while the picker is open nothing is in the conversation yet
+    assert!(!app
+        .items
+        .iter()
+        .any(|it| matches!(it, Item::Command { .. })));
+    app.update(key(KeyCode::Esc), &tx);
+    assert!(matches!(app.items.last(), Some(Item::Command { input, .. }) if input == "/model"));
+    assert_eq!(last_answer(&app), "kept model as ollama/llama3");
 }

@@ -536,6 +536,14 @@ impl App {
                 fmt_gib(s.ram_total),
                 s.ram
             );
+            if s.gpu_total > 0 {
+                m.push_str(&format!(
+                    " · gpu {} / {} GB ({:.0}%)",
+                    fmt_gib(s.gpu_used),
+                    fmt_gib(s.gpu_total),
+                    s.gpu
+                ));
+            }
             if s.swap_used > 0 {
                 m.push_str(&format!(" · swap {} GB", fmt_gib(s.swap_used)));
             }
@@ -544,6 +552,9 @@ impl App {
                 self.sys.peak_cpu(),
                 self.sys.peak_ram()
             ));
+            if s.gpu_total > 0 {
+                m.push_str(&format!(" · gpu {:.0}%", self.sys.peak_gpu()));
+            }
             lines.push(m);
         }
         self.push_item(Item::Info(lines.join("\n")));

@@ -62,7 +62,7 @@ impl App {
         save_recent(self.recent_file.as_deref(), &self.recent);
         self.fetch_model_state(tx);
         self.update_session_meta();
-        self.notify(format!("model: {q}"));
+        self.notify(format!("set model to {q}"));
     }
 
     /// Sessions list: the last ones opened on top, then all of them in

@@ -263,8 +263,9 @@ impl App {
     /// What goes to the right of the model in the hints row: the memory the
     /// model takes up and the machine readings,
     /// `12.1G · cpu 34% ▲61 · ram 57% ▲75`, the current value and the peak of
-    /// the last 3 minutes, plus `swap 1.2G` if any. Under 120 columns the
-    /// peaks and the size drop out; under 90, everything does.
+    /// the last 3 minutes, then `gpu 78% ▲90` on a machine with a card and
+    /// `swap 1.2G` if any. Under 120 columns the peaks and the size drop
+    /// out; under 90, everything does.
     pub fn stats_spans(&self, width: u16) -> Vec<Span<'static>> {
         let t = &self.theme;
         if width < STATS_SHORT_MIN_WIDTH {
@@ -312,6 +313,16 @@ impl App {
                     format!(" ▲{:.0}", self.sys.peak_ram()),
                     t.muted(),
                 ));
+            }
+            if s.gpu_total > 0 {
+                v.push(Span::styled(" · gpu ", t.muted()));
+                v.push(Span::styled(format!("{:.0}%", s.gpu), pct(s.gpu)));
+                if full {
+                    v.push(Span::styled(
+                        format!(" ▲{:.0}", self.sys.peak_gpu()),
+                        t.muted(),
+                    ));
+                }
             }
             if s.swap_used > 0 {
                 v.push(Span::styled(

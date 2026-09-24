@@ -181,7 +181,9 @@ impl App {
             if hidden(&self.items[i]) {
                 continue;
             }
-            take(&blank, &mut out);
+            if !hangs(&self.items[i]) {
+                take(&blank, &mut out);
+            }
             if is_request(&self.items[i]) {
                 take(&rule, &mut out);
             }
@@ -334,7 +336,7 @@ impl App {
             if hidden(&self.items[i]) {
                 continue;
             }
-            total += 1
+            total += usize::from(!hangs(&self.items[i]))
                 + usize::from(is_request(&self.items[i]))
                 + self.cache[i].as_ref().map_or(0, |r| r.lines.len());
         }
@@ -375,7 +377,9 @@ impl App {
             if hidden(&self.items[i]) {
                 continue;
             }
-            take(&blank, &mut out);
+            if !hangs(&self.items[i]) {
+                take(&blank, &mut out);
+            }
             if is_request(&self.items[i]) {
                 take(&rule, &mut out);
             }
@@ -409,10 +413,21 @@ pub(super) fn slice_columns(text: &str, from: usize, to: usize) -> String {
 /// Prefix of every line of a request: a bar in `moon`.
 pub(super) const USER_BAR: &str = "▌ ";
 
-/// A user message: opens a turn in the conversation.
+/// A user message or a slash command: opens a turn in the conversation.
 pub(super) fn is_request(item: &Item) -> bool {
-    matches!(item, Item::Message(m) if m.role == Role::User)
+    matches!(item, Item::Message(m) if m.role == Role::User) || matches!(item, Item::Command { .. })
 }
+
+/// A tool step hangs from what comes before it, with no blank row between:
+/// the request, or the step before.
+pub(super) fn hangs(item: &Item) -> bool {
+    matches!(item, Item::Step(_))
+}
+
+/// Prefix of the first line of a command's answer or of a step, and of the
+/// ones after it.
+pub(super) const ANSWER_HOOK: &str = "  ⎿  ";
+const ANSWER_PAD: &str = "     ";
 
 /// What is in the context but not on screen: a tool's result (the step line
 /// says what happened) and a reply that only carried calls.
@@ -438,6 +453,9 @@ pub(super) fn item_key(item: &Item) -> usize {
                 + usize::from(m.usage.is_some())
         }
         Item::Error(s) | Item::Info(s) => s.len(),
+        Item::Command { input, output } => {
+            input.len() + output.iter().map(|o| o.len() + 1).sum::<usize>()
+        }
         // a step never changes once it is in
         Item::Step(s) => s.path.len() + 1,
     }
@@ -516,32 +534,74 @@ pub(super) fn item_lines(
             .flat_map(|l| wrap_line(&Line::from(Span::styled(l.to_string(), t.muted())), width))
             .collect(),
         Item::Step(s) => step_line(s, t, width),
+        Item::Command { input, output } => command_lines(input, output, t, width),
     }
 }
 
-/// One line per tool call: `·` for a read, `✎` for a write, then the verb,
-/// the path, the line counts of an edit and how it ended.
+/// `▌ /model` with the bar in `moon`, then the answer hanging from `⎿`.
+fn command_lines(input: &str, output: &[String], t: &Theme, width: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    let line = Line::from(Span::styled(input.to_string(), t.muted()));
+    for w in wrap_line(&line, width - 2) {
+        let mut spans = vec![Span::styled(USER_BAR, t.accent())];
+        spans.extend(w.spans);
+        out.push(Line::from(spans));
+    }
+    let mut first = true;
+    for l in output.iter().flat_map(|o| o.lines()) {
+        let style = if l.starts_with('✗') {
+            t.error()
+        } else {
+            t.muted()
+        };
+        let line = Line::from(Span::styled(l.to_string(), style));
+        for w in wrap_line(&line, width - ANSWER_PAD.len()) {
+            let prefix = if first { ANSWER_HOOK } else { ANSWER_PAD };
+            first = false;
+            let mut spans = vec![Span::styled(prefix, t.muted())];
+            spans.extend(w.spans);
+            out.push(Line::from(spans));
+        }
+    }
+    out
+}
+
+/// One line per tool call, hanging from `⎿`: the verb and the path, `✎` in
+/// front of a write and `✗` of a failure, then the line counts of an edit and
+/// how it ended, or why it failed.
 fn step_line(s: &moon_agent::Step, t: &Theme, width: usize) -> Vec<Line<'static>> {
     use moon_agent::Outcome;
-    let (glyph, glyph_style) = match (&s.outcome, s.tool.writes()) {
-        (Outcome::Failed(_), _) => ("✗", t.muted()),
-        (_, true) => ("✎", t.accent()),
-        (_, false) => ("·", t.muted()),
-    };
-    let mut text = format!("{:<5} {}", s.tool.verb(), s.path);
-    if s.tool.writes() && !matches!(s.outcome, Outcome::Failed(_)) {
-        text.push_str(&format!(" · +{} −{}", s.added, s.removed));
+    let failed = matches!(s.outcome, Outcome::Failed(_));
+    let mut spans = Vec::new();
+    match (failed, s.tool.writes()) {
+        (true, _) => spans.push(Span::styled("✗ ", t.error())),
+        (false, true) => spans.push(Span::styled("✎ ", t.accent())),
+        (false, false) => {}
     }
-    let (tail, tail_style) = match &s.outcome {
-        Outcome::Done => (String::new(), t.muted()),
-        Outcome::Applied => (" · applied".to_string(), t.ok()),
-        Outcome::Skipped => (" · skipped".to_string(), t.muted()),
-        Outcome::Failed(e) => (format!(" · {e}"), t.muted()),
-    };
-    let line = Line::from(vec![
-        Span::styled(format!("{glyph} "), glyph_style),
-        Span::styled(text, t.muted()),
-        Span::styled(tail, tail_style),
-    ]);
-    wrap_line(&line, width)
+    spans.push(Span::styled(
+        format!("{:<5} {}", s.tool.verb(), s.path),
+        t.muted(),
+    ));
+    if s.tool.writes() && !failed {
+        spans.push(Span::styled(
+            format!("  +{} −{}", s.added, s.removed),
+            t.muted(),
+        ));
+    }
+    match &s.outcome {
+        Outcome::Applied => spans.push(Span::styled("  applied", t.ok())),
+        Outcome::Skipped => spans.push(Span::styled("  skipped", t.muted())),
+        Outcome::Failed(e) => spans.push(Span::styled(format!(" · {e}"), t.muted())),
+        Outcome::Done => {}
+    }
+    wrap_line(&Line::from(spans), width - ANSWER_PAD.len())
+        .into_iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let prefix = if i == 0 { ANSWER_HOOK } else { ANSWER_PAD };
+            let mut spans = vec![Span::styled(prefix, t.muted())];
+            spans.extend(w.spans);
+            Line::from(spans)
+        })
+        .collect()
 }

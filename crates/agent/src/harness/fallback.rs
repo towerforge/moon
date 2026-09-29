@@ -95,7 +95,7 @@ fn one(v: &Value, agent: &Agent) -> Option<ToolCall> {
     // `{"function": {"name", "arguments"}}` is the wire shape; unwrap it
     let v = v.get("function").unwrap_or(v);
     let name = v.get("name")?.as_str()?;
-    if !agent.tools.iter().any(|t| t.name() == name) {
+    if !agent.tools().iter().any(|t| t.name() == name) {
         return None;
     }
     let arguments = match v.get("arguments").or_else(|| v.get("parameters")) {

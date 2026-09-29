@@ -62,7 +62,7 @@ impl App {
         save_recent(self.recent_file.as_deref(), &self.recent);
         self.fetch_model_state(tx);
         self.update_session_meta();
-        self.notify(format!("model: {q}"));
+        self.notify(format!("set model to {q}"));
     }
 
     /// Sessions list: the last ones opened on top, then all of them in
@@ -196,14 +196,20 @@ impl App {
                 self.loaded = LoadedState::Unknown;
             }
         }
-        // the conversation had the file tools: back on, unless they are
-        if s.meta.tools && !self.tools_on {
-            if let Err(e) = self.enable_tools() {
-                self.notify(e);
+        // its agent, by name — the file says what is on, not the session;
+        // one whose file is gone falls back
+        let name = s.meta.agent.clone().unwrap_or_else(|| DEFAULT_AGENT.into());
+        if self.agent != name {
+            let _ = self.reload_agents();
+            if self.agents.iter().any(|d| d.name == name) {
+                self.agent = name;
+            } else {
+                self.agent = DEFAULT_AGENT.into();
+                self.notify(format!(
+                    "agent {name} is not defined any more · back to default"
+                ));
             }
-        }
-        if s.meta.tools && self.tools_on {
-            self.set_tools_scope(s.meta.tools_edit, s.meta.tools_create);
+            self.refresh_agent_state();
         }
         self.live = s
             .meta

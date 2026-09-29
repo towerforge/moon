@@ -29,6 +29,9 @@ impl App {
     }
 
     pub(super) fn send_message(&mut self, text: String, tx: &Tx) {
+        // the agent's file may have been edited by hand since: the message
+        // goes out with what it says now
+        self.sync_agents();
         if self.turn_active() {
             self.notify("wait for the reply to finish, or press esc to cancel it");
             self.input.set_text(&text);
@@ -124,6 +127,7 @@ impl App {
         meta.attachments = self.live.iter().map(|s| s.to_string()).collect();
         meta.tools = self.tools_on;
         (meta.tools_edit, meta.tools_create) = (edit, create);
+        meta.agent = (self.agent != DEFAULT_AGENT).then(|| self.agent.clone());
         if let Err(e) = store.update_meta(meta) {
             tracing::warn!(error = %e, "could not update the session");
         }

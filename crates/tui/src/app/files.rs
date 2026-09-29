@@ -44,7 +44,7 @@ impl App {
         match (&self.harness, self.tools_on) {
             (Some(h), true) => Some(match base {
                 Some(b) => format!("{b}\n\n{}", h.prompt()),
-                None => h.prompt().to_string(),
+                None => h.prompt(),
             }),
             _ => base,
         }
@@ -437,20 +437,36 @@ impl App {
             (Some(h), true) => format!(
                 "tools: {} · root {} · {}",
                 h.agent()
-                    .tools
+                    .tools()
                     .iter()
                     .map(|t| t.name())
                     .collect::<Vec<_>>()
                     .join(", "),
                 self.cwd,
-                if self.tools_write() {
-                    "every edit needs your ok"
-                } else {
-                    "read-only"
+                match (self.tools_write(), self.policy().writes_unseen()) {
+                    (false, _) => "read-only",
+                    (true, false) => "every edit needs your ok",
+                    (true, true) => "writes land without asking",
                 }
             ),
-            _ => "tools: off · /tools turns them on".into(),
+            _ => "tools: off · /agent turns them on".into(),
         });
+        let def = self.agent_def();
+        lines.push(format!("agent: {} · {}", def.name, def.description));
+        if self.tools_on {
+            let policy = self.policy();
+            for p in [moon_core::Permission::Allow, moon_core::Permission::Ask] {
+                let names: Vec<&str> = policy
+                    .entries()
+                    .into_iter()
+                    .filter(|(_, x)| *x == p)
+                    .map(|(e, _)| e.id)
+                    .collect();
+                if !names.is_empty() {
+                    lines.push(format!("  {}: {}", p.as_str(), names.join(", ")));
+                }
+            }
+        }
         let live = match self.read_live() {
             Ok(l) => l,
             Err(e) => {
@@ -536,6 +552,14 @@ impl App {
                 fmt_gib(s.ram_total),
                 s.ram
             );
+            if s.gpu_total > 0 {
+                m.push_str(&format!(
+                    " · gpu {} / {} GB ({:.0}%)",
+                    fmt_gib(s.gpu_used),
+                    fmt_gib(s.gpu_total),
+                    s.gpu
+                ));
+            }
             if s.swap_used > 0 {
                 m.push_str(&format!(" · swap {} GB", fmt_gib(s.swap_used)));
             }
@@ -544,6 +568,9 @@ impl App {
                 self.sys.peak_cpu(),
                 self.sys.peak_ram()
             ));
+            if s.gpu_total > 0 {
+                m.push_str(&format!(" · gpu {:.0}%", self.sys.peak_gpu()));
+            }
             lines.push(m);
         }
         self.push_item(Item::Info(lines.join("\n")));

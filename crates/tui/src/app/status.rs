@@ -12,11 +12,22 @@ impl App {
             t.accent(),
         );
         // the model is done for now: what it wants is on screen, waiting
-        if self.waiting_approval() {
+        if let Some(Panel::Approval(_)) = &self.panel {
             let mut v = vec![star, Span::raw(" ")];
             v.extend(self.shimmer("waiting for your approval"));
             v.push(Span::styled(
-                " · enter apply · s skip · esc cancel the turn",
+                " · 1 yes · 2 no · esc cancel the turn",
+                t.muted(),
+            ));
+            return Some(v);
+        }
+        // a command of the model is running: its line, and for how long
+        if let (Some(r), Some(exec)) = (&self.running, self.running_command()) {
+            let mut v = vec![star, Span::raw(" ")];
+            v.extend(self.shimmer("running"));
+            v.push(Span::styled(format!(" {}", exec.line), t.text()));
+            v.push(Span::styled(
+                format!(" ({}) · esc to cancel", fmt_dur(r.started.elapsed())),
                 t.muted(),
             ));
             return Some(v);
@@ -238,21 +249,34 @@ impl App {
         }
     }
 
-    /// The one permanent sign that the model can reach the files, at the
+    /// The one permanent sign that the model can reach the project, at the
     /// left of the hints row, `moon` and bold, like the mode indicators of
-    /// Claude Code: `⏵⏵ Read · Edit · Create`, only the boxes that are on
-    /// (`Read` is always one of them: it is the switch itself).
+    /// Claude Code: `⏵⏵ Read · Edit · Create · 4 commands`, one word per
+    /// file capability that is on and how many commands are — the effective
+    /// ones, and first the agent's name when one is chosen.
     pub fn edit_mode_span(&self) -> Option<Span<'static>> {
+        // everything runs through an agent, so the name is always there,
+        // `default` included; off, the marker says what /agent would run on
         if !self.tools_on {
-            return None;
+            return Some(Span::styled(
+                format!("⏵ {} · all off", self.agent),
+                self.theme.muted(),
+            ));
         }
-        let (edit, create) = self.tools_scope();
-        let mut words = vec!["Read"];
-        if edit {
-            words.push("Edit");
+        let policy = self.policy();
+        let mut words: Vec<String> = vec![self.agent.clone()];
+        if policy.reads() {
+            words.push("Read".into());
         }
-        if create {
-            words.push("Create");
+        if policy.edits() {
+            words.push("Edit".into());
+        }
+        if policy.creates() {
+            words.push("Create".into());
+        }
+        let n = self.tools_commands().len();
+        if n > 0 {
+            words.push(format!("{n} {}", models::plural(n, "command")));
         }
         Some(Span::styled(
             format!("⏵⏵ {}", words.join(" · ")),
@@ -263,8 +287,9 @@ impl App {
     /// What goes to the right of the model in the hints row: the memory the
     /// model takes up and the machine readings,
     /// `12.1G · cpu 34% ▲61 · ram 57% ▲75`, the current value and the peak of
-    /// the last 3 minutes, plus `swap 1.2G` if any. Under 120 columns the
-    /// peaks and the size drop out; under 90, everything does.
+    /// the last 3 minutes, then `gpu 78% ▲90` on a machine with a card and
+    /// `swap 1.2G` if any. Under 120 columns the peaks and the size drop
+    /// out; under 90, everything does.
     pub fn stats_spans(&self, width: u16) -> Vec<Span<'static>> {
         let t = &self.theme;
         if width < STATS_SHORT_MIN_WIDTH {
@@ -313,6 +338,16 @@ impl App {
                     t.muted(),
                 ));
             }
+            if s.gpu_total > 0 {
+                v.push(Span::styled(" · gpu ", t.muted()));
+                v.push(Span::styled(format!("{:.0}%", s.gpu), pct(s.gpu)));
+                if full {
+                    v.push(Span::styled(
+                        format!(" ▲{:.0}", self.sys.peak_gpu()),
+                        t.muted(),
+                    ));
+                }
+            }
             if s.swap_used > 0 {
                 v.push(Span::styled(
                     format!(" · swap {}G", crate::sysmon::fmt_gib(s.swap_used)),
@@ -344,27 +379,61 @@ impl App {
     /// Footer shortcuts of the open panel, the only place they are listed.
     pub fn panel_keys(&self) -> Vec<(&'static str, &'static str)> {
         match &self.panel {
-            Some(Panel::Models(p)) | Some(Panel::Sessions(p)) | Some(Panel::Files(p)) => {
-                p.keys.clone()
-            }
+            Some(Panel::Models(p))
+            | Some(Panel::Sessions(p))
+            | Some(Panel::Agents(p))
+            | Some(Panel::Files(p)) => p.keys.clone(),
             Some(Panel::Browse { picker, .. }) => picker.keys.clone(),
             Some(Panel::Help(_)) => {
                 vec![("tab", "section"), ("↑↓", "scroll"), ("esc", "close")]
             }
             Some(Panel::Machine) => vec![("esc", "close")],
-            Some(Panel::Tools(_)) => vec![
-                ("↑↓", "move"),
-                ("enter", "tick"),
-                ("←→", "change"),
-                ("esc", "save"),
+            Some(Panel::AgentPrompt(e)) => vec![
+                (
+                    "tab",
+                    if e.field == PromptField::Prompt {
+                        "description"
+                    } else {
+                        "prompt"
+                    },
+                ),
+                ("enter", "newline"),
+                ("esc", "save & close"),
+                ("ctrl+c", "discard"),
             ],
-            Some(Panel::Approval(_)) => vec![
-                ("↑↓", "choose"),
-                ("enter", "confirm"),
-                ("s", "skip"),
-                ("pgup/pgdn", "scroll"),
-                ("esc", "cancel turn"),
-            ],
+            Some(Panel::Perms(p)) => match p.level {
+                PermsLevel::Groups => vec![
+                    ("↑↓", "move"),
+                    ("enter", "open"),
+                    ("←→", "group off/on"),
+                    if p.from_picker {
+                        ("esc", "back to agents")
+                    } else {
+                        ("esc", "close")
+                    },
+                ],
+                PermsLevel::Group(_) => vec![
+                    ("↑↓", "move"),
+                    ("←→", "off · ask · allow"),
+                    ("enter", "on/off"),
+                    ("esc", "back to the groups"),
+                ],
+            },
+            Some(Panel::AgentAction { action, .. }) => match action {
+                AgentAction::New { .. } => vec![("enter", "create"), ("esc", "cancel")],
+                AgentAction::Rename { .. } => vec![("enter", "rename"), ("esc", "cancel")],
+                AgentAction::Delete { .. } => {
+                    vec![("↑↓", "choose"), ("enter", "confirm"), ("esc", "keep")]
+                }
+            },
+            Some(Panel::Approval(a)) => {
+                let mut v = vec![("↑↓", "choose"), ("enter", "confirm"), ("1/2", "yes/no")];
+                if a.edit().is_some() {
+                    v.push(("pgup/pgdn", "scroll"));
+                }
+                v.push(("esc", "cancel turn"));
+                v
+            }
             Some(Panel::SessionAction { action, .. }) => match action {
                 SessionAction::Delete { .. } => {
                     vec![("↑↓", "choose"), ("enter", "confirm"), ("esc", "keep")]
@@ -385,9 +454,9 @@ impl App {
             }
             false if self.suggestions().is_some() => " tab or enter to complete · esc to clear",
             false if self.tools_on => {
-                " /tools files · /model switch model · ctrl+s sessions · /help"
+                " /agent agents · /model switch model · ctrl+s sessions · /help"
             }
-            false => " /model switch model · ctrl+s sessions · ctrl+j newline · /help",
+            false => " /agent agents · /model switch model · ctrl+s sessions · /help",
         }
     }
 }

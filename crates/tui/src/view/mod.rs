@@ -7,18 +7,23 @@ use ratatui::widgets::{Clear, Paragraph, Scrollbar, ScrollbarOrientation, Scroll
 use ratatui::Frame;
 
 use crate::app::{
-    App, Approval, Choice, EditChoice, HelpState, HelpTab, Panel, SessionAction, ToolsDialog,
+    AgentAction, App, Approval, Choice, EditChoice, HelpState, HelpTab, Panel, SessionAction,
 };
 use crate::commands::{KEYS, SPECS};
 use crate::picker::{Picker, PickerGroup, Row};
 use crate::theme::Theme;
 use crate::wrap::{truncate, width, wrap_line};
+use moon_agent::{Exec, Pending};
 
+mod agent_prompt;
 mod diff;
 mod machine;
 mod panel;
+mod perms;
 #[cfg(test)]
 mod tests;
+
+pub use panel::RUN_BODY;
 
 /// Under this height every row counts: the conversation keeps the blank one
 /// it would otherwise give to the status row.

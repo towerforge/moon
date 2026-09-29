@@ -10,7 +10,7 @@ use super::*;
 use crate::app::{Action, HelpState, HelpTab, RunOptions};
 use crossterm::event::KeyCode;
 
-fn app() -> App {
+pub(super) fn app() -> App {
     app_at(std::env::temp_dir())
 }
 
@@ -27,10 +27,11 @@ fn app_at(root: std::path::PathBuf) -> App {
         cwd: "~/Towerforge/moon".into(),
         root,
         state_dir: None,
+        agents_dir: None,
     })
 }
 
-fn screen(term: &Terminal<TestBackend>) -> Vec<String> {
+pub(super) fn screen(term: &Terminal<TestBackend>) -> Vec<String> {
     let buf = term.backend().buffer();
     (0..buf.area.height)
         .map(|y| {
@@ -69,7 +70,8 @@ fn startup_screen() {
     assert_eq!(s[5].trim(), "");
     assert!(s[20].starts_with("─────"));
     assert!(s[21].starts_with("❯ "));
-    assert!(s[23].contains("/help"));
+    assert!(s[23].contains("default · all off"), "{}", s[23]);
+    assert!(s[23].contains("/model"), "{}", s[23]);
     let buf = term.backend().buffer();
     // the moon's color is `moon`, and the name `moon` goes in `moon` and bold
     assert_eq!(buf[(3, 1)].fg, app.theme.moon);
@@ -362,7 +364,10 @@ fn activity_on_the_left_and_status_on_the_right() {
     assert!(!status.contains('●'), "{status}");
     // the model goes at the very bottom, to the right of the hints
     let hints = &s[11];
-    assert!(hints.starts_with(" esc to cancel"), "{hints}");
+    assert!(
+        hints.starts_with(" ⏵ default · all off · esc to cancel"),
+        "{hints}"
+    );
     assert!(hints.trim_end().ends_with(" m"), "{hints}");
 }
 
@@ -397,6 +402,16 @@ fn machine_readings_at_the_bottom_right() {
         .push(Sample::new(34.0, 18 << 30, 32 << 30, 1288490189));
     let h = hints_at(&mut app, 130);
     assert!(h.ends_with("· ram 56% ▲75 · swap 1.2G"), "{h}");
+    // and the gpu, with a card to read, between the ram and the swap
+    app.sys
+        .push(Sample::new(34.0, 18 << 30, 32 << 30, 1288490189).with_gpu(6 << 30, 8 << 30));
+    let h = hints_at(&mut app, 130);
+    assert!(
+        h.ends_with("· ram 56% ▲75 · gpu 75% ▲75 · swap 1.2G"),
+        "{h}"
+    );
+    let h = hints_at(&mut app, 100);
+    assert!(h.ends_with("· ram 56% · gpu 75% · swap 1.2G"), "{h}");
 }
 
 #[test]
@@ -882,11 +897,89 @@ fn panel_de_la_maquina_con_braille() {
 }
 
 #[test]
-fn the_approval_panel_and_the_edits_marker() {
-    use crate::app::{Approval, Panel};
-    use moon_agent::{tools, Eol, PendingEdit, Tool};
+fn the_machine_panel_grows_a_gpu_column_and_draws_the_model_under_the_ram() {
+    use crate::app::{LoadedState, Panel};
+    use crate::sysmon::Sample;
+    use moon_core::LoadedModel;
+    use std::time::{Duration, Instant};
     let mut app = app();
     app.loading = false;
+    let tx = tx_dummy();
+    // a 12G model, 8G of it in an 8G card: 4G in ram, a third on the cpu
+    app.loaded = LoadedState::Loaded(LoadedModel {
+        id: "m".into(),
+        size_bytes: 12 << 30,
+        size_vram_bytes: 8 << 30,
+        context_length: None,
+        expires_at: None,
+    });
+    let base = Instant::now() - Duration::from_secs(60);
+    for i in 0..12u64 {
+        app.sys.push_at(
+            base + Duration::from_secs(i * 5),
+            Sample::new(20.0, 16 << 30, 32 << 30, 0)
+                .with_model(4 << 30, false)
+                .with_gpu(6 << 30, 8 << 30),
+        );
+    }
+    for c in "/machine".chars() {
+        app.update(key(crossterm::event::KeyCode::Char(c)), &tx);
+    }
+    app.update(key(crossterm::event::KeyCode::Enter), &tx);
+    assert!(matches!(app.panel, Some(Panel::Machine)));
+
+    let mut term = Terminal::new(TestBackend::new(78, 24)).unwrap();
+    term.draw(|f| view(&mut app, f)).unwrap();
+    let rows = screen(&term);
+    let s = rows.join("\n");
+    // three headings on one row, cpu · ram · gpu, with a rule between each two
+    let head_y = rows.iter().position(|r| r.contains("gpu")).unwrap();
+    let head = &rows[head_y];
+    assert_eq!(head.matches('│').count(), 2, "{head}");
+    let (c, r, g) = (
+        head.find("cpu").unwrap(),
+        head.find("ram").unwrap(),
+        head.find("gpu").unwrap(),
+    );
+    assert!(c < r && r < g, "{head}");
+    assert!(head.contains("75%"), "{head}");
+    // at 78 columns the totals do not fit next to the headings: they go
+    // under the plots, with the swap and the model, marked as the band
+    assert!(
+        s.contains("ram 16.0 / 32.0G · gpu 6.0 / 8.0G · no swap · ▮ 12.0G loaded · 33% on cpu"),
+        "{s}"
+    );
+    // the model's share is a band along the floor of the ram plot, in
+    // ink-muted, under the ram trace in moon-soft; the gpu trace goes in ink
+    let buf = term.backend().buffer();
+    let rule1 = head.chars().position(|c| c == '│').unwrap() as u16;
+    let rule2 = head.chars().count() - 1 - head.chars().rev().position(|c| c == '│').unwrap();
+    let rule2 = rule2 as u16;
+    let floor = head_y as u16 + 6;
+    let colors = |cols: std::ops::Range<u16>, y: u16| -> Vec<Option<ratatui::style::Color>> {
+        cols.filter(|x| buf[(*x, y)].symbol() != " ")
+            .map(|x| buf[(x, y)].style().fg)
+            .collect()
+    };
+    let ram_floor = colors(rule1 + 1..rule2, floor);
+    assert!(ram_floor.contains(&Some(app.theme.ink_muted)), "{s}");
+    let ram_above = colors(rule1 + 1..rule2, floor - 2);
+    assert!(ram_above.contains(&Some(app.theme.moon_soft)), "{s}");
+    assert!(!ram_above.contains(&Some(app.theme.ink_muted)), "{s}");
+    let gpu_floor = colors(rule2 + 1..78, floor);
+    assert!(gpu_floor.contains(&Some(app.theme.ink)), "{s}");
+    assert!(!gpu_floor.contains(&Some(app.theme.moon_soft)), "{s}");
+}
+
+#[test]
+fn the_approval_panel_and_the_edits_marker() {
+    use crate::app::{Approval, Panel};
+    use moon_agent::{editor, tools, Eol, Harness, Limits, PendingEdit, Sandbox, Tool};
+    let mut app = app();
+    app.loading = false;
+    // the editor behind the switch: reading, editing and creating
+    let sandbox = Sandbox::new(&std::env::temp_dir(), 10_000, &[]).unwrap();
+    app.harness = Some(Harness::new(editor(), sandbox, Limits::default()));
     app.tools_on = true;
     let mut term = Terminal::new(TestBackend::new(90, 24)).unwrap();
     term.draw(|f| view(&mut app, f)).unwrap();
@@ -894,7 +987,9 @@ fn the_approval_panel_and_the_edits_marker() {
     // the sign sits on the bottom row, on the left, listing what is on; the
     // welcome banner does not repeat it
     assert!(
-        s[23].trim_start().starts_with("⏵⏵ Read · Edit · Create"),
+        s[23]
+            .trim_start()
+            .starts_with("⏵⏵ default · Read · Edit · Create"),
         "{}",
         s[23]
     );
@@ -913,19 +1008,22 @@ fn the_approval_panel_and_the_edits_marker() {
         expect: Some(1),
         diff: tools::diff(before, after),
     };
-    app.panel = Some(Panel::Approval(Box::new(Approval::new(edit))));
+    app.panel = Some(Panel::Approval(Box::new(Approval::new(
+        moon_agent::Pending::Edit(edit),
+    ))));
     term.draw(|f| view(&mut app, f)).unwrap();
     let s = screen(&term);
     let title = s
         .iter()
-        .position(|l| l.contains("Edit src/a.rs"))
+        .position(|l| l.contains("Edit file"))
         .expect("title row");
     assert!(s[title].contains("+1 −1"), "{}", s[title]);
-    assert!(
-        s[title + 1].contains(" Apply ") && s[title + 1].contains(" Skip "),
-        "{}",
-        s[title + 1]
-    );
+    assert_eq!(s[title + 1].trim(), "src/a.rs");
+    // the question and the choices pinned over the footer's blank row
+    assert!(s[18].starts_with(" ╌╌╌"), "{}", s[18]);
+    assert_eq!(s[19].trim_end(), " Do you want to make this edit to a.rs?");
+    assert!(s[20].starts_with(" ❯ 1. Yes"), "{}", s[20]);
+    assert!(s[21].starts_with("   2. No"), "{}", s[21]);
     assert!(
         s.iter().any(|l| l.contains("- ") && l.contains("hi();")),
         "{s:?}"
@@ -952,50 +1050,51 @@ fn the_approval_panel_and_the_edits_marker() {
 }
 
 #[test]
-fn the_tools_panel() {
-    use crate::app::{Panel, ToolsDialog};
+fn the_run_approval_panel() {
+    use crate::app::{Approval, Panel};
+    use moon_agent::{Exec, Pending};
     let mut app = app();
     app.loading = false;
-    app.panel = Some(Panel::Tools(ToolsDialog {
-        on: true,
-        edit: true,
-        create: false,
-        rounds: 8,
-        row: ToolsDialog::CREATE,
-    }));
+    app.tools_on = true;
+    let exec = Exec {
+        id: "git commit",
+        program: "/usr/bin/git".into(),
+        args: vec!["commit".into(), "-m".into(), "fix: a".into()],
+        dir: "/p/src".into(),
+        rel_dir: "src".into(),
+        asks: true,
+        help: "commit what is staged",
+        line: "git commit -m \"fix: a\"".into(),
+    };
+    app.panel = Some(Panel::Approval(Box::new(Approval::new(Pending::Run(exec)))));
     let mut term = Terminal::new(TestBackend::new(90, 24)).unwrap();
     term.draw(|f| view(&mut app, f)).unwrap();
     let s = screen(&term);
     let title = s
         .iter()
-        .position(|l| l.contains("Let the model use files?"))
+        .position(|l| l.contains("Run command"))
         .expect("title row");
-    assert!(s[title].contains("~/Towerforge/moon"), "{}", s[title]);
+    // the folder on the right, the command under it, the line and the help
+    // below, the question over the choices
+    assert!(s[title].contains("in src"), "{}", s[title]);
+    assert_eq!(s[title + 1].trim(), "git commit");
     assert!(
-        s[title + 1].contains("only under this directory"),
-        "{}",
-        s[title + 1]
-    );
-    let row = |needle: &str| {
         s.iter()
-            .find(|l| l.contains(needle))
-            .unwrap_or_else(|| panic!("no row with {needle}: {s:?}"))
-            .clone()
-    };
-    assert!(row("Read files").trim_end().ends_with("[✓]"));
-    assert!(row("Edit existing files").trim_end().ends_with("[✓]"));
-    let create = row("Create new files");
-    assert!(
-        create.starts_with(" ❯ ") && create.trim_end().ends_with("[ ]"),
-        "{create}"
+            .any(|l| l.trim_end() == " Do you want to run git commit?"),
+        "{s:?}"
     );
-    assert!(row("Max steps per message").trim_end().ends_with("◀ 8 ▶"));
-    // the line under the rows explains the one the cursor is on
-    assert!(s.iter().any(|l| l.contains("proposes a new file")), "{s:?}");
-    assert!(!s.iter().any(|l| l.contains("before it has to answer")));
-    assert!(!s.iter().any(|l| l.contains("Continue")), "{s:?}");
+    assert!(s.iter().any(|l| l.starts_with(" ❯ 1. Yes")), "{s:?}");
     assert!(
-        s[23].contains("enter tick") && s[23].contains("esc save"),
+        s.iter().any(|l| l.contains("$ git commit -m \"fix: a\"")),
+        "{s:?}"
+    );
+    assert!(s.iter().any(|l| l.contains("in src")), "{s:?}");
+    assert!(
+        s.iter().any(|l| l.contains("commit what is staged")),
+        "{s:?}"
+    );
+    assert!(
+        s[23].contains("1/2 yes/no") && s[23].contains("esc cancel turn"),
         "{}",
         s[23]
     );

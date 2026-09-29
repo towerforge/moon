@@ -364,9 +364,20 @@ impl Sandbox {
         Ok(decode(loc.rel, &bytes))
     }
 
-    /// The entries of a directory, folders first, without the ones the
-    /// files panel skips either. `"."` is the root.
-    pub fn list(&self, raw: &str) -> Result<Vec<Entry>, Denied> {
+    /// The deny rules alone, for a string that may name a path: `.env` is
+    /// refused, `HEAD~1` or `--stat` pass, since they name nothing denied.
+    /// What the file tools would not read, a command is not pointed at.
+    pub fn deny_check(&self, raw: &str) -> Result<(), Denied> {
+        let Ok(comps) = Self::components(&self.within_root(raw)) else {
+            return Ok(());
+        };
+        let rel = comps.join("/");
+        self.check_deny(&comps, &rel)
+    }
+
+    /// Both checks and the deny rules, for a folder that must exist. `"."`
+    /// is the root.
+    pub fn directory(&self, raw: &str) -> Result<Located, Denied> {
         let comps = Self::components(&self.within_root(raw))?;
         let rel = if comps.is_empty() {
             ".".to_string()
@@ -384,6 +395,14 @@ impl Sandbox {
         if !meta.is_dir() {
             return Err(Denied::NotDir(rel));
         }
+        Ok(loc)
+    }
+
+    /// The entries of a directory, folders first, without the ones the
+    /// files panel skips either. `"."` is the root.
+    pub fn list(&self, raw: &str) -> Result<Vec<Entry>, Denied> {
+        let loc = self.directory(raw)?;
+        let rel = loc.rel;
         let mut out = Vec::new();
         for e in std::fs::read_dir(&loc.full).map_err(|e| io(&rel, e))? {
             let e = e.map_err(|e| io(&rel, e))?;

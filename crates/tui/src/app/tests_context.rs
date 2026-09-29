@@ -396,3 +396,24 @@ fn formats() {
     assert_eq!(fmt_size(8_988_124_069), "9.0 GB");
     assert_eq!(fmt_size(500_000_000), "500 MB");
 }
+
+#[tokio::test]
+async fn the_context_lists_the_gpu_when_there_is_a_card() {
+    let (mut app, tx, _rx) = app();
+    app.loading = false;
+    app.sys
+        .push(crate::sysmon::Sample::new(34.0, 18 << 30, 32 << 30, 0).with_gpu(6 << 30, 8 << 30));
+    type_text(&mut app, &tx, "/context");
+    app.update(key(KeyCode::Enter), &tx);
+    let Some(Item::Info(out)) = app.items.last() else {
+        panic!("expected Info, got {:?}", app.items.last())
+    };
+    assert!(
+        out.contains("machine: cpu 34% · ram 18.0 / 32.0 GB (56%) · gpu 6.0 / 8.0 GB (75%)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("3m peak: cpu 34% · ram 56% · gpu 75%"),
+        "{out}"
+    );
+}

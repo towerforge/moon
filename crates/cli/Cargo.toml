@@ -12,6 +12,7 @@ name = "moon"
 path = "src/main.rs"
 
 [dependencies]
+moon-agent           = { workspace = true }
 moon-core            = { workspace = true }
 moon-provider-ollama = { workspace = true }
 moon-provider-openai = { workspace = true }
@@ -26,3 +27,6 @@ tokio-util           = { workspace = true }
 tracing              = { workspace = true }
 tracing-appender     = { workspace = true }
 tracing-subscriber   = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

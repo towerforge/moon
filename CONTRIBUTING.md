@@ -26,13 +26,19 @@ make run                    # run the TUI from source
 | `crates/core` | The `Provider` trait, the domain types, configuration, XDG paths, JSONL sessions, files in the context. Knows nothing about terminals or HTTP. |
 | `crates/providers/ollama` | Ollama over its native API. |
 | `crates/providers/openai` | Any OpenAI-compatible chat completions API. |
-| `crates/agent` | The model editing files: the harness (the loop), the editor agent, the four tools and the sandbox that keeps every path under the start-up directory. Knows nothing about terminals or HTTP; `docs/harness.md` is the design. |
+| `crates/agent` | The model acting on the project: the harness (the loop), the agents, the catalogue of what it may do with its `off · ask · allow` policy (`tools/catalog.rs`), the five tools and the sandbox that keeps every path under the start-up directory. Knows nothing about terminals or HTTP; `docs/harness.md` is the design, `docs/tools.md` the user's side. |
 | `crates/tui` | The interface, Elm style: `app/mod.rs` holds the state and `update`, each other module under `app/` is one `impl App` about one concern, `view/` paints. |
+| `crates/updater` | The GitHub releases API, version order, checksum, archive and the in-place swap of the binary behind `moon update`. |
 | `crates/cli` | The `moon` binary: wires providers, loads configuration, starts the TUI or a subcommand. |
 
 Adding a provider is a new crate that implements `Provider` and
 `ProviderFactory` from `moon-core`, plus one `registry.register(...)` line in
 `crates/cli/src/main.rs`. Look at `crates/providers/openai` for the shape.
+
+Adding a command the model may run is one `Entry` in
+`crates/agent/src/tools/catalog.rs`: its group, what `Enter` turns it to and
+the flags it refuses. Then `UPDATE_DOCS=1 cargo test -p moon-agent docs`
+rewrites its table in `docs/tools.md`; without it, `make check` fails.
 
 ## Conventions
 

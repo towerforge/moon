@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="#installation"><img alt="Rust 1.88 or newer" src="https://img.shields.io/badge/rust-1.88%2B-8fb8ff?style=flat-square&logo=rust&logoColor=1c1c29"></a>
+  <a href="#install"><img alt="Rust 1.88 or newer" src="https://img.shields.io/badge/rust-1.88%2B-8fb8ff?style=flat-square&logo=rust&logoColor=1c1c29"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-8fb8ff?style=flat-square"></a>
   <img alt="macOS, Linux and Windows" src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-8fb8ff?style=flat-square">
   <img alt="Ollama and OpenAI-compatible providers" src="https://img.shields.io/badge/providers-Ollama%20%C2%B7%20OpenAI--compatible-8fb8ff?style=flat-square">
@@ -11,209 +11,107 @@
 
 <p align="center">
   A fast, keyboard-first chat client for language models that run on your own machine.<br>
-  Ollama out of the box, any OpenAI-compatible server next to it, and the state of your hardware always in view.
+  Ollama out of the box, any OpenAI-compatible server next to it, a model that can act on your project on your terms, and the state of your hardware always in view.
 </p>
 
 <p align="center">
   <img src="assets/readme/screenshot.svg" alt="moon answering a question in the terminal" width="900">
 </p>
 
-## Features
+## Install
 
-- **Local first.** Talks to Ollama over its native API, so it knows what only Ollama can tell: context windows, quantization, which model is in memory and how much it takes. Any OpenAI-compatible server (LM Studio, llama.cpp, vLLM, OpenRouter…) plugs in with three lines of configuration.
-- **A real chat interface.** Streaming Markdown with syntax-highlighted code, a status line that shows what the model is doing, tokens sent and received, speed, and how much of the context window the conversation fills.
-- **Your files, your rules.** Attach a file or a line range with `@path`, keep files attached for the whole conversation from the files panel (`Ctrl+F`), and put a `MOON.md` in a project so the model knows what it is looking at. moon never runs commands on the model's behalf, and it writes to disk only when you turn edits on in the `/tools` panel: then the model can read and edit files under the directory you started in, nothing above it, and every edit is a diff you apply or skip.
-- **Sessions that survive.** Every conversation is saved as JSONL. Resume the last one, pick any from a list sorted by title — with the five you last opened on top once there are enough of them to be worth it — rename, delete, export to Markdown.
-- **Switch models mid-conversation.** A fuzzy list that unfolds at the bottom, grouped by provider, with your recent models on top once there are enough of them to be worth it. The history stays; the next question goes to the new model.
-- **The machine, always in view.** CPU and RAM in the corner, with the peak of the last three minutes, and the loaded model's footprint next to it. When a model spills to the CPU or to swap, you see it before you feel it.
-- **Scriptable.** `moon ask` streams a reply to stdout, reads the prompt from a pipe, and keeps everything else — the waiting star, token stats — on stderr, and only when there is a terminal watching.
-- **Fast, small, private.** One Rust binary. No telemetry, no network traffic except to the providers you configure: `moon update` goes to GitHub when you run it, and the start-up check stays off until you turn it on.
+One binary, nothing else to install. macOS, Linux and Windows.
 
-## Installation
-
-moon is one binary with nothing else to install. It runs on macOS, Linux and Windows. The Windows build is recent and has had less testing: use Windows Terminal or another terminal with ANSI support, and open an issue if something misbehaves.
-
-#### Linux / macOS
+**Linux / macOS**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/towerforge/moon/main/install.sh | sh
 ```
 
-The installer detects your OS and architecture, downloads the latest release, verifies its SHA-256 and installs `moon` to `/usr/local/bin` when run as root, otherwise to `~/.local/bin`. It is for the first install: run it again with moon already there and it stops and points you at `moon update`, which is what upgrades from then on.
-
-| Variable | Effect |
-|---|---|
-| `MOON_INSTALL_DIR=/your/path` | install somewhere else |
-| `MOON_VERSION=0.2.0` | install a specific version instead of the latest |
-| `MOON_VARIANT=musl` · `gnu` | force the static (musl) or the glibc binary on Linux |
-| `MOON_FORCE=1` | install over a moon that is already there instead of pointing at `moon update` |
-
-#### Windows
+**Windows** (PowerShell)
 
 ```powershell
 irm https://raw.githubusercontent.com/towerforge/moon/main/install.ps1 | iex
 ```
 
-Installs `moon.exe` to `%LOCALAPPDATA%\Programs\moon`, verifies its SHA-256 and adds that folder to your user `PATH`. Set `$env:MOON_INSTALL_DIR` to install somewhere else and `$env:MOON_VERSION` to pin a version, and `$env:MOON_FORCE = "1"` to install over a moon that is already there. As on Linux and macOS, upgrading is `moon update`'s job — and the PowerShell installer cannot replace a `moon.exe` that is running, while `moon update` can.
+Then, with [Ollama](https://ollama.com) running and a model pulled:
 
-#### Manual download
+```sh
+ollama pull qwen2.5-coder:14b
+moon
+```
 
-Pre-built binaries are on the [releases page](https://github.com/towerforge/moon/releases/latest). Extract the archive and put `moon` (or `moon.exe`) somewhere in your `PATH`. `checksums.txt` next to the assets has the SHA-256 of every archive.
+That is all: with no configuration moon finds Ollama at `http://localhost:11434` (or wherever `OLLAMA_HOST` points) and picks the first model it sees. Type a question, press `Enter`; `/help` lists everything else.
 
-**Linux**
+<details>
+<summary><b>What the installers do, manual download, from source, updating</b></summary>
 
-| Platform | Asset |
-|---|---|
-| x86_64 (glibc) | `moon-linux-x86_64.tar.gz` |
-| x86_64 (static) | `moon-linux-x86_64-musl.tar.gz` |
-| ARM64 (glibc) | `moon-linux-aarch64.tar.gz` |
-| ARM64 (static) | `moon-linux-aarch64-musl.tar.gz` |
+**The installers.** `install.sh` detects your OS and architecture, verifies the SHA-256 and installs to `/usr/local/bin` as root, otherwise to `~/.local/bin`. `MOON_INSTALL_DIR`, `MOON_VERSION`, `MOON_VARIANT=musl|gnu` and `MOON_FORCE=1` change where, which version, which Linux binary and whether to install over an existing one. `install.ps1` installs `moon.exe` to `%LOCALAPPDATA%\Programs\moon`, verifies its SHA-256 and adds it to your user `PATH`; the same `MOON_INSTALL_DIR`, `MOON_VERSION` and `MOON_FORCE` apply, as `$env:` variables. The Windows build is recent and has had less testing: use Windows Terminal or another terminal with ANSI support, and open an issue if something misbehaves.
 
-**macOS**
-
-| Platform | Asset |
-|---|---|
-| Intel | `moon-macos-x86_64.tar.gz` |
-| Apple Silicon | `moon-macos-aarch64.tar.gz` |
-
-**Windows**
+**Manual download.** Binaries are on the [releases page](https://github.com/towerforge/moon/releases/latest), with `checksums.txt` next to them:
 
 | Platform | Asset |
 |---|---|
-| x86_64 | `moon-windows-x86_64.zip` |
+| Linux x86_64 · ARM64 (glibc) | `moon-linux-x86_64.tar.gz` · `moon-linux-aarch64.tar.gz` |
+| Linux x86_64 · ARM64 (static) | `moon-linux-x86_64-musl.tar.gz` · `moon-linux-aarch64-musl.tar.gz` |
+| macOS Intel · Apple Silicon | `moon-macos-x86_64.tar.gz` · `moon-macos-aarch64.tar.gz` |
+| Windows x86_64 | `moon-windows-x86_64.zip` |
 
-#### Updating
+**From source** (Rust 1.88 or newer): `cargo install --git https://github.com/towerforge/moon moon-cli`, or `make install` in a checkout.
+
+**Updating.** The installers do the first install and step aside; from then on:
 
 ```sh
 moon update          # what the new release brings, and it installs it once you say yes
 moon update --check  # says what there is and installs nothing
 ```
 
-This is the only way moon upgrades: the installers above do the first install and then step aside. `moon update` downloads the release for your platform, checks its SHA-256 against `checksums.txt` and swaps the binary in place: the one that is running stays until the new one is written. It only replaces a binary that came from a release: one from `cargo install` or a build under `target/` is left alone, and it says so.
+It downloads the release for your platform, checks its SHA-256 and swaps the binary in place. `-y` skips the question, `--to 0.2.0` picks a version, `--force` reinstalls. It leaves a binary from `cargo install` or a local build alone, and says so; `sudo moon update` where you cannot write. With `update_check = true` in the configuration moon asks GitHub once a day and says at startup when there is something newer.
 
-| Flag | Effect |
-|---|---|
-| `--check` | check and report, install nothing |
-| `-y` · `--yes` | install without asking; required when the output is not a terminal |
-| `--to 0.2.0` | that version instead of the latest, downgrades included |
-| `--force` | reinstall the same version, or overwrite a `cargo install` or a local build |
+</details>
 
-If the binary lives where you cannot write, `sudo moon update` does it; and `install.sh` with `MOON_FORCE=1` is always there as a way back in.
+## Features
 
-moon does not look for updates by itself. With `update_check = true` under `[general]` it asks GitHub once a day and, when there is something newer, says so at startup next to the version.
+- **Local first.** Talks to Ollama over its native API, so it knows what only Ollama can tell: context windows, quantization, which model is in memory and how much it takes. Any OpenAI-compatible server (LM Studio, llama.cpp, vLLM, OpenRouter…) plugs in with three lines of configuration.
+- **A real chat interface.** Streaming Markdown with syntax-highlighted code, a status line that shows what the model is doing, tokens sent and received, speed, and how much of the context window the conversation fills.
+- **Your files in the context.** Attach a file or a line range with `@path`, keep files attached for the whole conversation from the files panel (`Ctrl+F`), and put a `MOON.md` in a project so the model knows what it is looking at.
+- **Agents: a model that acts, on your terms.** An agent is one file with a prompt and its permissions: the model may read and edit files and run commands from a fixed list — `git diff`, `cargo check`, `docker compose up`, `curl`… — each one `off`, `ask` or `allow`. Never through a shell, never above the directory you started in, and an edit is a diff you approve unless you say otherwise. `/agent` picks, creates and edits them without leaving moon.
+- **Sessions that survive.** Every conversation is saved as JSONL. Resume the last one, pick any from a list, rename, delete, export to Markdown.
+- **Switch models mid-conversation.** A fuzzy list grouped by provider, with your recent models on top. The history stays; the next question goes to the new model.
+- **The machine, always in view.** CPU, RAM and GPU memory in the corner, with the peak of the last three minutes, and the loaded model's footprint next to it. When a model spills to the CPU or to swap, you see it before you feel it.
+- **Scriptable.** `moon ask` streams a reply to stdout, reads the prompt from a pipe, and keeps everything else on stderr.
+- **Fast, small, private.** One Rust binary. No telemetry, no network traffic except to the providers you configure: `moon update` goes to GitHub when you run it, and the start-up check stays off until you turn it on.
 
-#### From source
+## Using moon
 
-Needs Rust 1.88 or newer.
-
-```sh
-cargo install --git https://github.com/towerforge/moon moon-cli
-```
-
-Or from a checkout:
-
-```sh
-git clone https://github.com/towerforge/moon
-cd moon
-make install     # cargo install --path crates/cli --locked
-```
-
-## Getting started
-
-1. Have [Ollama](https://ollama.com) running and a model pulled:
-
-   ```sh
-   ollama pull qwen2.5-coder:14b
-   ```
-
-2. Start moon. With no configuration it finds Ollama at `http://localhost:11434` (or wherever `OLLAMA_HOST` points) and picks the first model it sees:
-
-   ```sh
-   moon
-   ```
-
-3. Type a question and press `Enter`. `Esc` cancels a reply. `/model` or `Ctrl+P` switches models. `/help` lists everything else.
-
-4. When you want to change something, write a commented configuration file and edit it:
-
-   ```sh
-   moon config init     # writes ~/.config/moon/config.toml
-   ```
-
-## Usage
-
-### The interface
-
-From top to bottom: a header with the crescent, the version, the active model and the directory you started in; the conversation; a status line; the input box; and a row of hints.
-
-The **bottom panel** is where every list lives: models, sessions, files and the help. It unfolds under the conversation, in the input box's place, and the box comes back when it closes. Nothing floats over what you are reading and nothing paints a surface of its own:
+From top to bottom: a header with the version, the model and the directory you started in; the conversation; a status line with what the model is doing and how much of the context window is used; the input box; and a row of hints with the agent, the model and the machine:
 
 ```
- Select model                                         12 models · 2 providers
- the conversation keeps its history · type to filter
-
- Recent ────────────────────────────────────────────────────────── 2 models  █
- ❯  1. llama3.1:8b ✓                ollama · 8B · Q4_0 · 4.7 GB · ctx 32.8k  █
-    2. gemma3:12b                  ollama · 12B · Q4_0 · 8.1 GB · ctx 32.8k  █
-                                                                             █
- ollama ───────────────────────────────────────────────── ● localhost:11434  █
-    3. llama3.1:8b ✓                         8B · Q4_0 · 4.7 GB · ctx 32.8k  █
-    4. gemma3:12b                           12B · Q4_0 · 8.1 GB · ctx 32.8k  │
-    5. qwen2.5-coder:14b                  14B · Q4_K_M · 9.0 GB · ctx 32.8k  │
-    6. deepseek-r1:7b                      7B · Q4_K_M · 4.4 GB · ctx 32.8k  │
-    7. mistral-nemo:12b                     12B · Q4_0 · 7.1 GB · ctx 32.8k  │
-    8. phi4:14b                             14B · Q4_0 · 9.1 GB · ctx 32.8k  │
-
- ↑↓ move · number jump · enter select · esc close                     1-11/19
+⏵⏵ default · Read · 2 commands   /agent agents · /model switch model   qwen2.5-coder:14b · 12.1G · cpu 34% ▲61 · ram 57% ▲75
 ```
 
-- The title names it and counts what is in it. Under it, what the list is for, or the filter as you type it.
-- `❯` marks the row under the cursor; `✓`, right after the text, the one in use.
-- Every row carries its number: press it and moon goes there and opens it. Past the ninth it takes two digits — `1` then `2` for the twelfth — and `Enter` settles for the row you are on. While you are typing a filter the digits belong to it; `Alt`+digit jumps anyway.
-- The bar on the right says where you are when the list does not fit, and the footer, which keys work.
-- `Esc` closes the panel. `Ctrl+D`, `Ctrl+R` and the rest keep working on the highlighted row.
+Every list — models, sessions, files, agents and their permissions, the help — unfolds as a panel under the conversation, in the input box's place: `↑↓` move, the number of a row jumps to it, `Enter` picks, `Esc` closes. Nothing floats over what you are reading. `/machine` draws the CPU, RAM and GPU readings over the last three minutes. The whole screen, row by row, is in [docs/interface.md](docs/interface.md).
 
-The **status line** has two halves. On the left, what is happening now: `generating (12s · ↑ ~3.2k · ↓ 640 tokens · 38 tok/s) · esc to cancel`, then the wrap-up `✓ done (…)` or `✗ cancelled (…)` with the real token counts. On the right, `context 8%`, how much of the context window the last exchange filled (it turns `moon-soft` at 80 %, when models start to forget the beginning), and the session total: generation time and tokens sent and received. With Ollama the window counted is the one the model is loaded with — your `num_ctx`, not the one the model declares — because that is the one that truncates.
+### Commands
 
-The **bottom row** shows the hints for the current situation on the left and, on the right, the active model and the machine:
-
-```
-qwen2.5-coder:14b · 12.1G · cpu 34% ▲61 · ram 57% ▲75
-```
-
-- `12.1G` is what the model takes in memory: weights plus the context cache, so it depends on `num_ctx` as much as on the model. If it is there, the model is loaded. If it is missing, the next request pays the loading time. Only Ollama can report this.
-- If the model does not fit in the GPU, `30% cpu` appears in bold: that is when generation crawls.
-- `cpu` and `ram` are sampled every 5 seconds, and twice a second while the model is thinking or answering or the `/machine` panel is open. After `▲`, the peak of the last 3 minutes. `swap 1.2G` appears only when swap is in use.
-- Below 120 columns the peaks and the model size go; below 90, the whole block. `system_stats = false` turns the machine readings off.
-
-`/context` prints the same in gigabytes, with the split between weights and context cache and how long until Ollama unloads the model.
-
-`/machine` opens the same readings as a drawing: the panel splits down the middle, cpu on the left and ram on the right, each filled in braille — 2×4 dots per cell — from the curve down. The window is the one the sampler keeps, so the plot fills from the right as samples pile up; under it go swap and what the loaded model takes. `Esc` closes it.
-
-### Slash commands
-
-Type `/` and the commands that match appear over the box, drawn like the panel: a title with how many are left, `❯` on the highlighted one and a bar on the right when they do not all fit. `↑↓` move, `Tab` completes, `Enter` runs the highlighted one.
+Type `/` and the commands that match appear over the box: `↑↓` move, `Tab` completes, `Enter` runs the highlighted one.
 
 | Command | What it does |
 |---|---|
-| `/model` | switch model: opens the list to pick one |
-| `/provider [id]` | provider status, or set the default provider |
-| `/new` | new conversation |
-| `/clear` | clear the view without closing the conversation |
+| `/model` | switch model: opens the list to pick one (also `Ctrl+P`) |
+| `/provider [id]` | provider status, or set the default provider for bare model names |
+| `/agent` | who talks to the model and what it may do: pick an agent, `Ctrl+T` its permissions, `Ctrl+E` its prompt, `Ctrl+A`/`Ctrl+R`/`Ctrl+D` create, rename, delete |
+| `/tools` | an alias kept for a while: the permissions of the agent in use |
+| `/files` | attached files: see what they cost, detach them and add more (also `Ctrl+F`) |
+| `/context` | what the model sees: context file, attached files, agent and permissions, token budget |
+| `/sessions` | resume a saved conversation (also `Ctrl+S`); `Ctrl+R` renames, `Ctrl+D` deletes |
+| `/new` · `/clear` | new conversation · clear the view without closing the conversation |
+| `/save [name]` · `/export [path.md]` | rename the conversation · write it as Markdown |
+| `/retry` · `/undo` · `/copy` | regenerate the last reply · remove the last exchange · copy the last reply |
 | `/system [text]` | show or set the system prompt |
 | `/params key=value …` | generation parameters: `temperature`, `num_ctx`, `top_p`, `max_tokens`, `think`, `stop` |
-| `/sessions` | resume a saved conversation (also `Ctrl+S`); `Ctrl+R` renames, `Ctrl+D` deletes |
-| `/save [name]` | save the conversation and, optionally, rename it |
-| `/export [path.md]` | export the conversation as Markdown |
-| `/copy` | copy the last reply to the clipboard |
-| `/retry` | regenerate the last reply |
-| `/undo` | remove the last question/reply pair |
-| `/files` | attached files: see what they cost, detach them and add more (also `Ctrl+F`) |
-| `/tools` | the model using files: a panel to turn it on and off, decide whether it may only read, also edit or also create, and how many rounds a turn gets |
-| `/context` | what the model sees: context file, attached files, token budget, machine |
-| `/machine` | cpu, ram and swap drawn over the last 3 minutes |
-| `/help` | commands and keys, in a scrollable panel |
-| `/quit` | quit |
+| `/machine` | cpu, ram, gpu and swap drawn over the last 3 minutes |
+| `/help` · `/quit` | commands and keys, in a scrollable panel · quit |
 
 ### Keys
 
@@ -223,231 +121,102 @@ Type `/` and the commands that match appear over the box, drawn like the panel: 
 | `Ctrl+J` · `Alt+Enter` · `Shift+Enter` | newline (`Shift+Enter` only with the kitty keyboard protocol) |
 | `Esc` | cancel the generation · close the panel · clear the selection |
 | `Ctrl+C` | cancel; twice with an empty input, quit |
-| `Ctrl+D` · `Del` | quit if the input is empty · in the sessions panel, delete the highlighted session |
-| `Ctrl+R` | in the sessions panel, rename the highlighted session |
+| `Ctrl+P` · `Ctrl+S` · `Ctrl+F` | the models, sessions and files panels |
 | `1`…`9` · `12` · `Alt+1`…`Alt+9` | in a list, go to the row with that number and open it; past the ninth it takes two digits, or `Enter` to settle for the row you are on; while you are typing a filter the digits belong to it, `Alt` always jumps |
-| `Ctrl+P` | model panel |
-| `Ctrl+S` | sessions panel |
-| `↑` · `↓` · `Enter` · `s` · `Esc` | in the edit panel: choose apply or skip · confirm · skip · cancel the turn; `PgUp` · `PgDn` scroll the diff |
-| `↑` · `↓` · `Enter` · `←` · `→` · `Esc` | in the tools panel: move · tick the box under the cursor, or continue on the last row · change the number · cancel |
-| `Ctrl+F` | files panel: what is attached, what it costs, and the tree to attach more |
+| `Ctrl+R` · `Ctrl+D` | in the sessions and agents panels: rename · delete the highlighted one (`Ctrl+D` with an empty input and no panel quits) |
+| `Ctrl+A` · `Ctrl+T` · `Ctrl+E` | in the agents panel: new agent · its permissions · its description and prompt |
+| `↑↓` · `Enter` · `←→` · `Esc` | in the permissions panel: move · open a group, or a row on and off · a whole group off or on, or `off` · `ask` · `allow` on a row · back to the groups, then close |
+| `1` · `2` · `↑↓` · `Enter` · `Esc` | in the approval panel: yes · no · choose · confirm · cancel the turn; `PgUp` · `PgDn` scroll the diff |
 | `↑` · `↓` | prompt history (on the first / last line of the input) |
 | `PgUp` · `PgDn` · `Ctrl+↑` · `Ctrl+↓` | scroll the conversation |
 | `Ctrl+End` · `Ctrl+Home` | jump to bottom (and follow the reply) · to top |
 | `Tab` | complete a command, or a path after `@` |
 | `Ctrl+W` · `Ctrl+U` · `Ctrl+K` | delete word · to line start · to line end |
-| `Ctrl+A` · `Ctrl+E` | start · end of line |
+| `Ctrl+A` · `Ctrl+E` | start · end of line (in the input box) |
 
-The mouse works too: the wheel scrolls, dragging over the conversation selects text and copies it when you let go, and the «↓ Jump to bottom» pill is clickable. In the input box a click moves the cursor and a drag selects what you are writing — it is copied when you let go, and the next key drops the highlight without touching the text. To select text with your terminal instead, hold `Shift` while dragging, or set `mouse = false`.
+The mouse works too: the wheel scrolls, dragging over the conversation selects text and copies it when you let go, and the «↓ Jump to bottom» pill is clickable. In the input box a click moves the cursor and a drag selects what you are writing. To select text with your terminal instead, hold `Shift` while dragging, or set `mouse = false`.
 
 ### Files in the context
 
-The model only sees what you give it.
+The model only sees what you give it: `@path` or `@path:40-120` in a message attaches a file as it is now; `Ctrl+F` keeps files attached for the whole conversation and shows what each one costs; a `MOON.md` in the directory you start from goes into every system prompt. moon warns instead of sending when the attachments would pass 80 % of the context window, and refuses binaries and files that look like credentials (`@!path` forces one through).
 
-- **`@path`** in a message attaches that file as it is right now. `@path:40-120` attaches a line range. `Tab` completes paths after `@`.
-- **`Ctrl+F`** (or `/files`) opens the files panel: what is attached and what each file costs, `Enter` to detach one, and a button that walks the project tree to attach more. Attachments stay for the whole conversation and are re-read on every send; how many there are is shown on the right of the status row.
-- **`MOON.md`** in the directory you start from is loaded into the system prompt: what the model should know about the project without being told every time. The file name is configurable (`context_file`).
-- **Budget.** If the attachments would exceed 80 % of the model's context window, moon warns and does not send. `/context` shows every file with its token estimate and the size of the next request.
-- **Secrets.** Binaries and files that look like credentials (`.env`, private keys) are refused. `@!path` forces one through.
+## Agents: letting the model act
 
-### Editing files
+Off until you turn it on. Everything the model does goes through an **agent**, and an agent is **one TOML file** in `~/.config/moon/agents/` with a prompt and its permissions, whole: **choosing the agent is choosing what the model may do**. There is no other switch and no other place to look.
 
-Writing is off until you ask for it, and with no configuration file at all moon is the chat client it has always been: the model only reads what you attach. A file written by `moon config init` turns reading on — `read_file` and `list_dir`, nothing that touches the disk. `/tools` opens a small panel under the conversation and changes all of it for this conversation:
+`moon config init` writes two: `default.toml`, the agent every conversation starts with (reading on, nothing else), and `reviewer.toml`, a sample that reads the project and looks at git and never writes. Any other file in the folder is an agent of yours — and you do not have to write it by hand:
+
+- `/agent` is a picker like `/model`'s: `Enter` picks the agent for the conversation, `Ctrl+A` creates one (name it, and moon writes a template and opens its permissions), `Ctrl+R` renames it, `Ctrl+D` deletes it.
+- `Ctrl+T` opens its **permissions**: the groups (**Editor**, **Files**, **Git**, **Stack**, **Docker**, **Network**), then one row per capability, each **off** (not offered), **ask** (shown to you first: the diff, or the command line) or **allow** (runs on its own). Every step is saved to the file at once.
+- `Ctrl+E` opens its **description and prompt**, edited in moon itself. No prompt means moon's own.
 
 ```
- Let the model use files?                                      ~/Towerforge/moon
- only under this directory · every edit is a diff you apply or skip · no shell
-
- It gets read_file and list_dir; edit_file and write_file with the boxes below.
- It cannot run commands, delete or rename files, or reach anything above this
- directory.
-
- ❯ Read files                                                             [✓]
-   Edit existing files                                                    [✓]
-   Create new files                                                       [✓]
-   Max steps per message                                                ◀ 8 ▶
-
-   the model can open and list files under this directory, and nothing more
-
- ↑↓ move · enter tick · ←→ change · esc save
+ Permissions · committer › Git                    agents/committer.toml
+   git status   ◀  off  ▶  what is changed, staged and untracked
+ ❯ git diff     ◀ allow ▶  the changes not yet committed
+   git commit   ◀  ask  ▶  commit what is staged
 ```
 
-The first box is the switch: on, the model gets `read_file` and `list_dir` for this conversation, and the marker on the bottom row lists it: `⏵⏵ Read`. The second adds `edit_file`, the third `write_file`, each adding its own word to the marker (`⏵⏵ Read · Edit · Create` with both on). Editing and creating need reading, so ticking either ticks the first box too, and unticking the first box unticks all three: all off is tools off. Opened while off, every box starts off. Create without edit means create: `write_file` on a file that exists is refused, so the third box alone cannot replace a file whole. The number is how many times the model may use a tool for one message before it has to answer; then the turn stops. The muted line under the rows explains the one the cursor is on. `Enter` ticks the box under the cursor; `Esc` applies whatever is set and closes the panel. There is no cancel. The three boxes have their own settings under `[tools]` — `enabled`, `edit` and `create` — for the state every conversation starts in; `moon config init` writes reading on and both writing boxes off. There is no shell tool, so the model cannot run commands, tests or builds, and it cannot delete or rename files.
+The files are yours: edit one by hand and the next message uses it. Each lists every capability there is, `off` included, with what it does as a comment, and when an update adds capabilities every file is brought up to date on the next start. `moon config reset` writes `config.toml`, `default.toml` and `reviewer.toml` again as they ship; your other agents and your sessions stay. Because a file grants, the agents folder carries the same trust as `config.toml`: only ever your own configuration.
 
-- **Only forward, never back.** Paths are relative to the directory you started moon in and must stay under it: no `..`, no `~`, no absolute path outside it (one inside it, pasted from your editor, works), no symlink that leads outside. `.git/`, the files the secrets filter refuses (`.env`, keys) and the globs in `deny` are never touched. Every write goes through the same check, before and after touching the disk.
-- **Only with your ok.** A read or a listing runs on its own. An edit opens a panel under the conversation with the diff, and nothing is written until you press `Enter` on `Apply`; `s` skips it and tells the model so; `Esc` cancels the whole turn. There is no way to preapprove edits.
-- **What you see.** `⏵⏵ Read · Edit · Create` at the left of the bottom row while it is on, one word per box that is ticked (just `⏵⏵ Read` with both writing boxes off); one line per tool call in the conversation (`· read src/a.rs`, `✎ edit src/a.rs · +3 −1 · applied`); `waiting for your approval` in the status row while the panel is open. `/context` lists the tools and the root.
-- **What stops a model that loops.** At most eight rounds of tool calls per message, ten calls per reply and three refused paths per turn; then the turn stops and says why. An edit needs the file read first in the conversation, and fails if the file changed since.
-- **What it cannot protect you from.** The model can write a `Makefile`, a `build.rs` or a git hook that *you* will run later. That is why every edit is a diff in front of you, and why moon says so when the directory is not a git repository: it cannot undo what you apply, git can.
+What keeps it safe: commands run as programs with their arguments, never through a shell, and only from a fixed list; paths stay under the directory you started in, `.git/` and anything that looks like a secret are never touched; edits and new files ask by default, and `allow` on them — writing without showing you the diff — is yours to set. The full catalogue, the rules and what they cannot protect you from are in [docs/tools.md](docs/tools.md); the design in [docs/agents.md](docs/agents.md) and [docs/harness.md](docs/harness.md).
 
-The model needs tool support: with Ollama, `ollama show <model>` lists `tools` under capabilities when it has it (`qwen2.5-coder`, `llama3.1`, `qwen3`, `mistral-nemo` do); a model without it answers the request with an error. Some of them, `qwen2.5-coder` among them, write the call as JSON in the reply instead of a proper tool call; moon recognizes a reply that is nothing but a call and runs it all the same. The state travels with the session, so a resumed conversation comes back as it was.
+## Sessions and the CLI
 
-### Sessions
-
-Conversations are saved automatically as JSONL, one file each, and titled after the first message.
-
-```sh
-moon --resume            # continue the last conversation
-moon --resume <id>       # or a specific one
-moon sessions list
-```
-
-Inside the TUI, `Ctrl+S` opens the panel: `All` holds every session sorted by title, ignoring case, and from ten sessions on a `Recent` section on top holds the five you last opened or wrote to, in that order. Below ten the list is in view whole and `Recent` would only repeat it, so it is not drawn. No dates on screen, only the title and the model it ran on; `moon sessions list` still prints them with their date. `Enter` resumes, `Ctrl+R` renames, `Ctrl+D` deletes, each in the same panel. Deleting the conversation you are in is allowed: the file goes and what is on screen simply stops being saved, so the next message starts a new session. `/save name` renames the current conversation; `/export notes.md` writes it as Markdown. Set `save_sessions = false` to keep nothing.
-
-### The CLI
-
-Everything that does not need a screen:
+Conversations are saved as JSONL and titled after the first message. `Ctrl+S` opens them: `Enter` resumes, `Ctrl+R` renames, `Ctrl+D` deletes. `moon --resume` continues the last one.
 
 ```sh
 moon ask "explain the borrow checker"          # reply streams to stdout
 git diff | moon ask --system "review this"     # prompt from stdin
-moon ask --stats "…"                           # token counts and speed, on stderr
 moon ask "summarize @README.md"                # the same @path mentions as the TUI
-```
-
-The `@path` mentions are expanded in the prompt you type, not in what comes
-down a pipe: piped text is content, and a diff or a log is full of `@@` and
-`@Annotation` tokens that are not paths.
-
-While it waits, `ask` turns the same star the TUI uses, with `thinking…` or
-`loading model…` next to it and the seconds gone by — a local model that is not
-in memory yet can take ten of them before the first token. It goes to stderr,
-and only when stderr is a terminal, so `moon ask … > file` and `… | grep` get
-the reply and nothing else; it is erased before the first token is printed, and
-`NO_COLOR` drops the colour.
-
-```sh
 moon -m ollama/qwen2.5-coder:14b               # start with this model
-moon --config ./moon.toml                      # another configuration file
-moon models                                    # models of every provider
-moon providers                                 # provider status
-moon config init | path | show
-moon update                                    # update to the latest release
-moon update --check                            # is there a new version?
+moon --resume                                  # continue the last conversation
+moon models · moon providers · moon sessions list
+moon config init | reset | path | show         # the files: write what is missing, start over, where, in effect
+moon update · moon update --check
 ```
 
-A model is `provider/model`, or just `model` when the name is unique across providers.
+`moon ask` gets no agent and no tools: there is nowhere to approve. More in [docs/interface.md](docs/interface.md#the-cli).
 
 ## Configuration
 
-Everything is optional. Without a file, moon talks to Ollama at `http://localhost:11434` and uses the first model it finds. Precedence: CLI flags, then environment variables, then `config.toml`, then defaults.
+Everything is optional; without a file moon talks to Ollama on `localhost` and uses the first model it finds. `moon config init` writes the commented `config.toml` in `~/.config/moon/` and, next to it, the `agents/` folder.
 
-### Where things live
+```toml
+[general]
+default_model = "ollama/qwen2.5-coder:14b"
+system_prompt = "Answer briefly."
+
+[params]
+num_ctx = 16384          # the window Ollama loads the model with
+
+[providers.lmstudio]     # any OpenAI-compatible server
+type     = "openai"
+base_url = "http://localhost:1234/v1"
+```
 
 | What | Where |
 |---|---|
 | Configuration | `~/.config/moon/config.toml` |
+| Agents, `default` included | `~/.config/moon/agents/<name>.toml` |
 | Sessions | `~/.local/share/moon/sessions/` |
-| Log, recent models, recent sessions and the last update check | `~/.local/state/moon/` |
+| Log and recent lists | `~/.local/state/moon/` |
 
-The same XDG layout on macOS and Linux; `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME` are honored. On Windows the same folders hang from `%USERPROFILE%`, so the configuration is `%USERPROFILE%\.config\moon\config.toml`.
-
-### Reference
-
-```toml
-[general]
-default_model    = "ollama/qwen2.5-coder:14b"  # model at startup, provider first
-system_prompt    = "Answer briefly."
-mouse            = true       # wheel scrolls and drag selects; false leaves selection to the terminal
-save_sessions    = true
-context_file     = "MOON.md"  # project context file; "" for none
-max_attachment_bytes = 200000 # bigger @files are truncated
-system_stats     = true       # cpu and ram at the bottom right
-update_check     = false      # ask github once a day for a newer moon and say so at startup
-
-[params]                      # defaults for every model; /params overrides them per session
-num_ctx     = 16384           # the window Ollama loads the model with
-temperature = 0.7
-# top_p, max_tokens, stop, think; anything else is passed to the provider as is
-
-[providers.ollama]
-type       = "ollama"
-base_url   = "http://localhost:11434"   # or the OLLAMA_HOST variable
-think      = false                      # ask for reasoning from models that support it
-keep_alive = "5m"                       # how long Ollama keeps the model loaded
-
-[tools]                       # the model using files: /tools opens the panel that changes it for one conversation
-enabled        = true         # Read files: read_file and list_dir at startup
-edit           = false        # Edit existing files: adds edit_file
-create         = false        # Create new files: adds write_file
-max_file_bytes = 200000       # bigger files are neither read nor edited
-deny           = [".github/workflows/**"]   # never touched, on top of .git/ and the secrets filter
-
-[theme.overrides]             # any of the ten Moon tokens, as hex
-moon      = "#8fb8ff"
-ink-muted = "#a9a7b8"
-```
-
-Every `[providers.<id>]` block takes `type` (`ollama` or `openai`), `base_url`, `enabled` (default `true`), `timeout_secs` (default `15`) and, for keyed services, `api_key_env`: the **name** of the environment variable that holds the key, never the key itself.
-
-### Providers
-
-Ollama is built in. Anything that speaks the OpenAI chat completions API is an `openai` provider:
-
-```toml
-[providers.lmstudio]
-type     = "openai"
-base_url = "http://localhost:1234/v1"
-
-[providers.llamacpp]
-type     = "openai"
-base_url = "http://localhost:8080/v1"
-
-[providers.vllm]
-type     = "openai"
-base_url = "http://localhost:8000/v1"
-
-[providers.openrouter]
-type        = "openai"
-base_url    = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-
-[providers.old]
-type     = "openai"
-base_url = "http://10.0.0.5:1234/v1"
-enabled  = false                      # kept in the file, ignored at runtime
-```
-
-`moon providers` shows which ones answered and their version. A provider that cannot be built (a bad URL, a missing key) is disabled with the reason, and moon still starts. `/provider <id>` sets the default provider for bare model names.
-
-### Theme
-
-moon draws with ten tokens from the Moon design system and one brand color. It uses truecolor when the terminal announces it (`COLORTERM=truecolor` or `24bit`) and the nearest 256-color palette otherwise.
-
-| Token | Default | Used for |
-|---|---|---|
-| `night` | `#1c1c29` | the darkest surface of the palette; moon leaves the terminal's own background showing |
-| `night-raised` | `#2a2a3c` | code blocks, the command suggestions |
-| `night-line` | `#4a4a60` | separators, borders at rest |
-| `moon` | `#8fb8ff` | the crescent, the prompt, the cursor, headings, command names |
-| `moon-soft` | `#c7dbff` | focus, small accents, the machine percentages |
-| `ink` | `#f3ece3` | the model's text and your input |
-| `ink-muted` | `#a9a7b8` | your messages, hints, everything secondary |
-| `on-moon` | `#1c1c29` | text on a `moon` fill |
-| `ok` | `#8fd9a0` | `✓ done` |
-| `alert` | `#ff8f8f` | `✗ cancelled` |
-
-moon never paints the background: your terminal's own shows through, and the tokens are picked to sit on top of it.
-
-### Logging
-
-moon writes to `~/.local/state/moon/moon.log`, never to the screen. `RUST_LOG=debug moon` for more detail, including every request to the providers.
-
-## Project context: MOON.md
-
-Drop a `MOON.md` in a project and start moon there. Its content goes into the system prompt of every request, so the model knows the layout, the conventions and the vocabulary of the project without being told. This repository's own [`MOON.md`](MOON.md) is a small example. The files panel (`Ctrl+F`) lists it under `Project`, and `/context` shows its size in tokens.
+Every key, the providers, the theme and the log are in [docs/configuration.md](docs/configuration.md).
 
 ## FAQ
+
+**Does moon edit files or run commands?** Only what the agent in use allows, and never through a shell. Off by default. See [Agents](#agents-letting-the-model-act).
+
+**I want to start from scratch.** `moon config reset` writes the configuration and the two factory agents again, after asking; your own agents and your sessions stay. To wipe everything, delete `~/.config/moon/`, `~/.local/share/moon/` and `~/.local/state/moon/`.
 
 **`Shift+Enter` sends instead of inserting a newline.** Terminals only distinguish `Shift+Enter` from `Enter` with the kitty keyboard protocol (kitty, WezTerm, Ghostty, foot). Everywhere else use `Ctrl+J` or `Alt+Enter`.
 
 **The colors look flat.** Your terminal did not announce truecolor, so moon falls back to the 256-color palette. Set `COLORTERM=truecolor` if the terminal really supports it. Terminal.app on macOS does not.
 
-**The wheel changes my prompt instead of scrolling.** That happens with `mouse = false`: in the alternate screen the terminal turns wheel events into arrow keys, and arrows walk the prompt history. Leave mouse capture on and hold `Shift` when you want the terminal's own text selection.
+**The wheel changes my prompt instead of scrolling.** That happens with `mouse = false`: in the alternate screen the terminal turns wheel events into arrow keys. Leave mouse capture on and hold `Shift` when you want the terminal's own text selection.
 
-**Does moon edit files or run commands?** Commands, never: there is no shell tool to turn on. Files, only when you say so: the `/tools` panel lets the model read and edit files under the directory you started in, and every edit is a diff you apply or skip. Off by default, and off again from the same panel. See [Editing files](#editing-files).
-
-**Where does the model size come from?** From Ollama's `/api/ps`: the loaded footprint, how much of it sits in the GPU, the context length it was loaded with and when it will be unloaded. Other providers do not expose this, so the row shows only the machine readings with them.
+**Where does the model size come from?** From Ollama's `/api/ps`: the loaded footprint, how much of it sits in the GPU, the context length and when it will be unloaded. Other providers do not expose this.
 
 **Which Ollama version do I need?** Any recent one. moon is developed against 0.34.
 
@@ -457,21 +226,22 @@ Drop a `MOON.md` in a project and start moon there. Its content goes into the sy
 make check              # fmt --check + clippy -D warnings + tests, what CI runs
 make run ARGS="ask hi"  # run from source
 make build              # release binary in target/release/moon
-make package            # dist/moon-<os>-<arch>.tar.gz for this machine
 make help               # everything else: cross-compiling, versioning, releasing
 ```
 
-A Cargo workspace of five crates:
+A Cargo workspace of seven crates:
 
 | Crate | Role |
 |---|---|
 | `moon-core` | the `Provider` trait, domain types, configuration, XDG paths, JSONL sessions, files in the context |
 | `moon-provider-ollama` | Ollama over its native API |
 | `moon-provider-openai` | any OpenAI-compatible chat completions API |
+| `moon-agent` | the model acting on the project: the loop, the agents and their files, the catalogue of what it may do, the tools and the sandbox; [docs/harness.md](docs/harness.md) and [docs/agents.md](docs/agents.md) are the designs |
 | `moon-tui` | the interface: `app/` is the state, Elm style, one module per concern; `view/` paints it |
+| `moon-updater` | the GitHub releases, the checksum and the swap of the binary behind `moon update` |
 | `moon-cli` | the `moon` binary |
 
-Adding a provider is a new crate that implements `Provider` and `ProviderFactory`, plus one line in `crates/cli/src/main.rs`. Rendering is tested on ratatui's `TestBackend`, providers on `wiremock`. See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions and the release flow.
+Adding a provider is a new crate that implements `Provider` and `ProviderFactory`, plus one line in `crates/cli/src/main.rs`. Adding a command the model may run is one `Entry` in `crates/agent/src/tools/catalog.rs`; `UPDATE_DOCS=1 cargo test -p moon-agent docs` then refreshes its table in [docs/tools.md](docs/tools.md), and every agent file picks it up at the next start. Rendering is tested on ratatui's `TestBackend`, providers on `wiremock`. See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions and the release flow.
 
 ## Contributing
 
@@ -484,6 +254,4 @@ Bug reports, provider integrations and rough edges made smooth are all welcome. 
 <p align="center">
   <br>
   <img src="assets/moon-mark.svg" width="48" alt="" style="image-rendering: pixelated">
-  <br>
-  <sub>Built with the Moon design system: one brand color, a pixel crescent, square corners.</sub>
 </p>

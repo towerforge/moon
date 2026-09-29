@@ -55,20 +55,60 @@ impl Default for GeneralConfig {
     }
 }
 
-/// The model editing files: off unless asked for, and even then only under
-/// the start-up directory and with every write approved on screen. There is
-/// no setting that skips the approval.
+/// What the model may do with one capability: nothing, or only with the
+/// user's ok each time, or on its own. Everything an agent's permissions
+/// panel lists, file tools and commands alike, has one of these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Permission {
+    /// Not offered to the model at all.
+    #[default]
+    Off,
+    /// Shown and waited for: a diff, or a command line, to confirm or skip.
+    Ask,
+    /// Runs on its own.
+    Allow,
+}
+
+impl Permission {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Permission::Off => "off",
+            Permission::Ask => "ask",
+            Permission::Allow => "allow",
+        }
+    }
+}
+
+/// The ids of the file capabilities in the catalogue the permissions panel
+/// lists, as they are written in an agent's file. The commands are their
+/// own ids: `git diff`, `ls`.
+pub mod ids {
+    pub const READ_FILES: &str = "read files";
+    pub const EDIT_FILES: &str = "edit existing files";
+    pub const CREATE_FILES: &str = "create new files";
+    pub const SUBFOLDERS: &str = "commands in subfolders";
+    /// What `SUBFOLDERS` was called before it left the `Files` group; a
+    /// file that still says it means the same.
+    pub const SUBFOLDERS_OLD: &str = "run inside subfolders";
+}
+
+/// The model acting on the project: the two limits every agent runs under,
+/// and four keys from before agents carried their permissions, read once —
+/// when `agents/default.toml` is first written — and never again.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ToolsConfig {
-    /// `Read files`: offer `read_file` and `list_dir` at startup. The
-    /// `/tools` panel does the same for one conversation.
+    /// From before agents existed: `enabled` gives `read files` its
+    /// `allow`, `edit` and `create` give `edit existing files` and `create
+    /// new files` their `ask`. Only what `default.toml` starts from when
+    /// there is none yet.
     pub enabled: bool,
-    /// `Edit existing files`: add `edit_file` when they come on at startup.
-    /// Only read at startup: from the panel, the boxes decide.
     pub edit: bool,
-    /// `Create new files`: add `write_file`, under the same rule as `edit`.
     pub create: bool,
+    /// The same, as a table by the ids the panel shows: `"read files" =
+    /// "allow"`, `"git diff" = "allow"`. It wins over the three keys.
+    pub permissions: BTreeMap<String, Permission>,
     /// Files bigger than this are neither read nor edited.
     pub max_file_bytes: usize,
     /// Paths the model may not touch, as globs relative to the project root,
@@ -84,10 +124,49 @@ impl Default for ToolsConfig {
             // meant before these two existed: all four tools
             edit: true,
             create: true,
+            permissions: BTreeMap::new(),
             max_file_bytes: crate::context::DEFAULT_MAX_BYTES,
             deny: vec![".github/workflows/**".to_string()],
         }
     }
+}
+
+impl ToolsConfig {
+    /// What the four older keys say: the table, or, while it is empty, what
+    /// the three booleans mean. Nothing, from a configuration that never
+    /// set them.
+    pub fn startup_permissions(&self) -> BTreeMap<String, Permission> {
+        if !self.permissions.is_empty() {
+            return self.permissions.clone();
+        }
+        let mut p = BTreeMap::new();
+        if self.enabled {
+            p.insert(ids::READ_FILES.to_string(), Permission::Allow);
+            if self.edit {
+                p.insert(ids::EDIT_FILES.to_string(), Permission::Ask);
+            }
+            if self.create {
+                p.insert(ids::CREATE_FILES.to_string(), Permission::Ask);
+            }
+        }
+        p
+    }
+}
+
+/// Writes `text` as `path`, through a temporary file next to it, the folder
+/// made if it was not there: how every file moon writes whole lands, so a
+/// crash mid-write leaves the old one.
+pub fn write_text(path: &Path, text: &str) -> Result<(), ConfigError> {
+    let io = |p: &Path| {
+        let p = p.to_path_buf();
+        move |source| ConfigError::Io { path: p, source }
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(io(dir))?;
+    }
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, text).map_err(io(&tmp))?;
+    std::fs::rename(&tmp, path).map_err(io(path))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -223,17 +302,30 @@ mod tests {
         assert_eq!(ollama.kind, "ollama");
         assert_eq!(ollama.base_url.as_deref(), Some("http://localhost:11434"));
         assert!(ollama.enabled);
-        // `moon config init` gives reading, and nothing that writes
-        assert_eq!(
-            (cfg.tools.enabled, cfg.tools.edit, cfg.tools.create),
-            (true, false, false)
-        );
+        // the permissions are the agents': the template says nothing about
+        // them, so nothing is on until default.toml or the panel says so
+        assert!(cfg.tools.startup_permissions().is_empty());
+        assert!(TEMPLATE.contains("agents/"));
         // the rest of the block stays commented: the defaults apply
         assert_eq!(
             cfg.tools.max_file_bytes,
             ToolsConfig::default().max_file_bytes
         );
         assert_eq!(cfg.tools.deny, ToolsConfig::default().deny);
+        // the table, once there, is what counts
+        let with = Config::parse(
+            "[tools]\nenabled = true\n[tools.permissions]\n\"git diff\" = \"allow\"\n\"git commit\" = \"ask\"\n",
+            Path::new("t"),
+        )
+        .unwrap();
+        let p = with.tools.startup_permissions();
+        assert_eq!(p.get("git diff"), Some(&Permission::Allow));
+        assert_eq!(p.get("git commit"), Some(&Permission::Ask));
+        assert_eq!(p.get(ids::READ_FILES), None);
+        // a value that is not one of the three is an error
+        assert!(
+            Config::parse("[tools.permissions]\n\"ls\" = \"maybe\"\n", Path::new("t")).is_err()
+        );
     }
 
     #[test]
@@ -245,6 +337,11 @@ mod tests {
             (cfg.tools.enabled, cfg.tools.edit, cfg.tools.create),
             (true, true, true)
         );
+        let p = cfg.tools.startup_permissions();
+        assert_eq!(p.get(ids::READ_FILES), Some(&Permission::Allow));
+        assert_eq!(p.get(ids::EDIT_FILES), Some(&Permission::Ask));
+        assert_eq!(p.get(ids::CREATE_FILES), Some(&Permission::Ask));
+        assert!(ToolsConfig::default().startup_permissions().is_empty());
     }
 
     #[test]
@@ -305,6 +402,20 @@ moon = "#ffffff"
         .unwrap();
         assert!(cfg.providers.contains_key("ollama"));
         assert!(!cfg.general.mouse);
+    }
+
+    #[test]
+    fn write_text_makes_the_folder_and_leaves_no_temporary_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deeper").join("x.toml");
+        write_text(&path, "a = 1\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a = 1\n");
+        assert!(!path.with_extension("toml.tmp").exists());
+        write_text(&path, "a = 2\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a = 2\n");
+        assert_eq!(Permission::default(), Permission::Off);
+        assert!(Permission::Off < Permission::Ask && Permission::Ask < Permission::Allow);
+        assert_eq!(Permission::Allow.as_str(), "allow");
     }
 
     #[test]

@@ -24,13 +24,16 @@ use crate::mentions;
 use crate::picker::{Picker, PickerGroup, PickerItem};
 use crate::theme::Theme;
 use crate::wrap::{pad_line, wrap_line};
+use moon_agent::{AgentDef, DEFAULT_AGENT};
 use moon_core::context::{self, Attachment, Spec};
 
 mod agent;
+mod agent_prompt;
 mod chat;
 mod files;
 mod keys;
 mod models;
+mod perms;
 mod render;
 mod slash;
 mod status;
@@ -39,9 +42,15 @@ mod tests;
 #[cfg(test)]
 mod tests_agent;
 #[cfg(test)]
+mod tests_agent_prompt;
+#[cfg(test)]
+mod tests_commands;
+#[cfg(test)]
 mod tests_context;
 
-pub use agent::{Approval, EditChoice, ToolsDialog};
+pub use agent::{Approval, EditChoice, ROUNDS_MAX};
+pub use agent_prompt::{PromptEdit, PromptField};
+pub use perms::{group_rows, group_sections, PermRow, PermsLevel, PermsView};
 
 pub type Tx = mpsc::UnboundedSender<Action>;
 
@@ -73,6 +82,9 @@ pub enum Action {
     PollLoaded,
     /// Answer to that question, for the model that was asked about.
     Loaded(Current, LoadedState),
+    /// A command the model asked for has finished, on its thread; the
+    /// number says which one.
+    Ran(u64, moon_agent::Output),
     Quit,
 }
 
@@ -93,8 +105,15 @@ pub enum Item {
     Message(Message),
     Error(String),
     Info(String),
-    /// What a tool did, one line: `· read src/a.rs`, `✎ edit src/a.rs · +3 −1 · applied`.
+    /// What a tool did, one line hanging from the request: `⎿  read  src/a.rs`,
+    /// `⎿  ✎ edit  src/a.rs  +3 −1  applied`.
     Step(moon_agent::Step),
+    /// A slash command as it was typed, with what it answered underneath:
+    /// `▌ /model` and `⎿  set model to ollama/llama3`.
+    Command {
+        input: String,
+        output: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,6 +171,9 @@ pub struct RunSummary {
 pub enum Panel {
     Models(Picker),
     Sessions(Picker),
+    /// `/agent`: the agent definitions, built in and from the agents
+    /// folder; the chosen one shapes the loop over what you grant.
+    Agents(Picker),
     /// What is attached to every request: the files, the project context file
     /// and the two buttons that add and detach.
     Files(Picker),
@@ -165,6 +187,12 @@ pub enum Panel {
     /// cpu and ram drawn over the last three minutes. It holds no state: it
     /// reads `sys`, which the sampler keeps up to date.
     Machine,
+    /// One agent's description and prompt being edited from the picker,
+    /// saved to the agent's file.
+    AgentPrompt(Box<PromptEdit>),
+    /// The permissions table over one agent: the whole catalogue, what
+    /// the agent names, what you grant and what runs, edited in place.
+    Perms(Box<PermsView>),
     /// What is being decided about a session, in the sessions list's place;
     /// the list is kept so we can return to it as it was.
     SessionAction {
@@ -174,8 +202,12 @@ pub enum Panel {
     /// An edit the model asked for, waiting for the user: the diff and the
     /// two choices. The turn is paused underneath.
     Approval(Box<Approval>),
-    /// `/tools`: whether the model may edit files, and how far.
-    Tools(ToolsDialog),
+    /// What is being decided about an agent, in the picker's place; the
+    /// list is kept so we can return to it as it was.
+    AgentAction {
+        picker: Box<Picker>,
+        action: AgentAction,
+    },
 }
 
 impl Panel {
@@ -183,27 +215,49 @@ impl Panel {
     /// session dialogs have none.
     pub fn picker(&self) -> Option<&Picker> {
         match self {
-            Panel::Models(p) | Panel::Sessions(p) | Panel::Files(p) => Some(p),
+            Panel::Models(p) | Panel::Sessions(p) | Panel::Agents(p) | Panel::Files(p) => Some(p),
             Panel::Browse { picker, .. } => Some(picker),
-            Panel::Help(_)
+            Panel::AgentPrompt(_)
+            | Panel::Perms(_)
+            | Panel::Help(_)
             | Panel::Machine
             | Panel::SessionAction { .. }
             | Panel::Approval(_)
-            | Panel::Tools(_) => None,
+            | Panel::AgentAction { .. } => None,
         }
     }
 
     pub fn picker_mut(&mut self) -> Option<&mut Picker> {
         match self {
-            Panel::Models(p) | Panel::Sessions(p) | Panel::Files(p) => Some(p),
+            Panel::Models(p) | Panel::Sessions(p) | Panel::Agents(p) | Panel::Files(p) => Some(p),
             Panel::Browse { picker, .. } => Some(picker),
-            Panel::Help(_)
+            Panel::AgentPrompt(_)
+            | Panel::Perms(_)
+            | Panel::Help(_)
             | Panel::Machine
             | Panel::SessionAction { .. }
             | Panel::Approval(_)
-            | Panel::Tools(_) => None,
+            | Panel::AgentAction { .. } => None,
         }
     }
+}
+
+/// What is being done with an agent from the picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentAction {
+    /// `ctrl+a`: the name of the new agent, as it is being typed.
+    New {
+        input: String,
+    },
+    /// `ctrl+r`: the file's new name, as it is being typed.
+    Rename {
+        name: String,
+        input: String,
+    },
+    Delete {
+        name: String,
+        choice: Choice,
+    },
 }
 
 /// What is being done with a session from the list.
@@ -342,6 +396,10 @@ pub struct RunOptions {
     pub root: PathBuf,
     /// State kept between runs (recent models and sessions). `None` saves nothing.
     pub state_dir: Option<PathBuf>,
+    /// The agents folder next to the configuration, one TOML per agent for
+    /// the `/agent` picker, `default.toml` included. `None` keeps the
+    /// built-ins in memory and writes nothing.
+    pub agents_dir: Option<PathBuf>,
 }
 
 /// Recent models and sessions shown on top of their lists, and the files
@@ -448,6 +506,9 @@ pub struct App {
     input_drag: bool,
     pub selection: Option<Selection>,
     pub notice: Option<(String, Instant)>,
+    /// The slash command in progress and what it has answered so far: it
+    /// goes into the conversation once its panel, if any, is closed.
+    pub echo: Option<(String, Vec<String>)>,
     pub should_quit: bool,
     ctrl_c_at: Option<Instant>,
     pub spinner: usize,
@@ -457,11 +518,20 @@ pub struct App {
     sys_pace: crate::sysmon::Pace,
     /// Whether the provider has the active model loaded, and how much it takes.
     pub loaded: LoadedState,
-    /// The model may read and edit files under the root, each edit with
-    /// the user's ok. The `/tools` panel, or `[tools] enabled`.
+    /// The model may act on the root: the chosen agent has something on.
     pub tools_on: bool,
     /// The loop behind `tools_on`; built when it is turned on.
     pub(crate) harness: Option<moon_agent::Harness>,
+    /// The command running off the main thread, if one is, and the number
+    /// the next one gets: a result that comes back late is told apart by it.
+    pub(crate) running: Option<agent::Running>,
+    run_seq: u64,
+    /// The agent definitions the picker shows — the files of the agents
+    /// folder as last read, or the built-ins without one — and the name of
+    /// the chosen one; a name no definition carries falls back to `default`.
+    pub(crate) agents: Vec<AgentDef>,
+    pub(crate) agent: String,
+    pub(crate) agents_dir: Option<PathBuf>,
 
     md: Renderer,
     cache: Vec<Option<Rendered>>,
@@ -585,6 +655,7 @@ impl App {
             input_drag: false,
             selection: None,
             notice: None,
+            echo: None,
             should_quit: false,
             ctrl_c_at: None,
             spinner: 0,
@@ -593,6 +664,11 @@ impl App {
             loaded: LoadedState::default(),
             tools_on: false,
             harness: None,
+            running: None,
+            run_seq: 0,
+            agents: AgentDef::builtin(),
+            agent: DEFAULT_AGENT.to_string(),
+            agents_dir: opts.agents_dir,
             md: Renderer::new(),
             cache: Vec::new(),
             cfg: opts.config,
@@ -621,10 +697,22 @@ impl App {
             }
         }
         app.load_context_file();
-        if app.cfg.tools.enabled {
-            if let Err(e) = app.enable_tools() {
-                app.items.push(Item::Error(e));
-            }
+        // the agents folder: default.toml made if it was not there, every
+        // file brought up to the catalogue, and what happened said once;
+        // then the tools follow what default has on
+        for line in app.reload_agents() {
+            app.items.push(Item::Info(line));
+        }
+        let started = if app.agents_dir.is_none() && app.cfg.tools.enabled {
+            // no folder to have carried the old keys into: they still count
+            app.enable_tools()
+        } else if !app.agent_def().policy.is_empty() {
+            app.enable_harness()
+        } else {
+            Ok(())
+        };
+        if let Err(e) = started {
+            app.items.push(Item::Error(e));
         }
         if let Some(id) = opts.resume {
             app.resume(&id);
@@ -779,20 +867,53 @@ impl App {
     // ----- update -----------------------------------------------------------
 
     pub fn needs_tick(&self) -> bool {
-        self.is_streaming() || self.loading || self.notice.is_some() || self.waiting_approval()
+        self.is_streaming()
+            || self.loading
+            || self.notice.is_some()
+            || self.waiting_approval()
+            || self.running.is_some()
     }
 
     pub fn is_streaming(&self) -> bool {
         matches!(self.gen, Generation::Streaming { .. })
     }
 
+    /// A short answer. While a slash command is being answered and no panel
+    /// is open it goes under the command, in the conversation; otherwise, to
+    /// the status bar for a while.
     pub fn notify(&mut self, text: impl Into<String>) {
-        self.notice = Some((text.into(), Instant::now()));
+        let text = text.into();
+        match self.echo.as_mut() {
+            Some((_, output)) if self.panel.is_none() => output.push(text),
+            _ => self.notice = Some((text, Instant::now())),
+        }
+    }
+
+    /// Closes the command in progress once it has no panel open: into the
+    /// conversation if it answered something. Not in the middle of a turn,
+    /// whose reply grows on the last item: then the answer goes to the bar.
+    pub(super) fn settle_echo(&mut self) {
+        if self.panel.is_some() {
+            return;
+        }
+        let Some((input, output)) = self.echo.take() else {
+            return;
+        };
+        if output.is_empty() {
+            return;
+        }
+        if self.turn_active() {
+            self.notice = Some((output.join(" · "), Instant::now()));
+            return;
+        }
+        self.push_item(Item::Command { input, output });
+        self.follow = true;
     }
 
     pub fn update(&mut self, action: Action, tx: &Tx) {
         let was_streaming = self.is_streaming();
         self.apply(action, tx);
+        self.settle_echo();
         let streaming = self.is_streaming();
         // the machine is watched more closely while the model thinks or
         // replies, and while the panel that draws it is open: at the idle
@@ -809,7 +930,9 @@ impl App {
         match action {
             Action::Key(k) => self.handle_key(k, tx),
             Action::Paste(s) => {
-                if let Some(p) = self.panel.as_mut().and_then(Panel::picker_mut) {
+                if let Some(Panel::AgentPrompt(e)) = self.panel.as_mut() {
+                    e.paste(&s);
+                } else if let Some(p) = self.panel.as_mut().and_then(Panel::picker_mut) {
                     for c in s.chars().filter(|c| !c.is_control()) {
                         p.push(c);
                     }
@@ -826,7 +949,12 @@ impl App {
                     }
                 }
             }
-            Action::SysSample(s) => self.sys.push(s),
+            // the model's share in RAM rides along, from the last `/api/ps`
+            Action::SysSample(s) => {
+                let model = crate::sysmon::model_in_ram(&self.loaded);
+                self.sys
+                    .push(s.with_model(model, crate::sysmon::MODEL_COUNTS_AS_CACHE));
+            }
             // during generation the figure does not change: wait for the end;
             // a provider that cannot tell is not asked again
             Action::PollLoaded => {
@@ -842,7 +970,26 @@ impl App {
             Action::ScrollBy(d) => match self.panel.as_mut() {
                 Some(Panel::Help(h)) => h.scroll_by(d),
                 Some(Panel::Approval(a)) => a.scroll_by(d),
-                Some(Panel::SessionAction { .. }) | Some(Panel::Tools(_)) => {}
+                // the wheel walks the rows of the level it is at
+                Some(Panel::Perms(p)) => match p.level {
+                    PermsLevel::Groups => {
+                        let n = moon_agent::Category::ALL.len();
+                        p.row = if d < 0 {
+                            p.row.saturating_sub(1)
+                        } else {
+                            (p.row + 1).min(n - 1)
+                        };
+                    }
+                    PermsLevel::Group(cat) => {
+                        let n = group_rows(cat).len();
+                        p.perm = if d < 0 {
+                            p.perm.saturating_sub(1)
+                        } else {
+                            (p.perm + 1).min(n - 1)
+                        };
+                    }
+                },
+                Some(Panel::SessionAction { .. }) => {}
                 // in the lists the wheel moves the cursor one at a time
                 Some(panel) => {
                     if let Some(p) = panel.picker_mut() {
@@ -900,6 +1047,7 @@ impl App {
                 self.notify("session resumed");
             }
             Action::Notice(s) => self.notify(s),
+            Action::Ran(id, out) => self.on_ran(id, out, tx),
             // the welcome block is built on every paint: nothing to invalidate
             Action::UpdateAvailable(v) => self.update_available = Some(v),
             Action::Quit => self.should_quit = true,

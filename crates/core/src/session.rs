@@ -32,6 +32,10 @@ pub struct SessionMeta {
     pub tools_edit: bool,
     #[serde(default = "yes", skip_serializing_if = "is_yes")]
     pub tools_create: bool,
+    /// The agent chosen for the conversation, written only when it is not
+    /// the default, so every session written so far reads back the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     #[serde(skip)]
     pub path: PathBuf,
 }
@@ -119,6 +123,7 @@ impl SessionStore {
             tools: false,
             tools_edit: true,
             tools_create: true,
+            agent: None,
             path: self.dir.join(name),
         };
         let mut f = fs::File::create(&meta.path).map_err(io_err(&meta.path))?;
@@ -332,12 +337,20 @@ mod tests {
         store.update_meta(&read_only).unwrap();
         let back = store.load(&meta.id).unwrap().meta;
         assert!(back.tools && !back.tools_edit && !back.tools_create);
-        // a file from before the two boxes had both on
+        // a file from before the two boxes had both on, and no agent
         let old: SessionMeta = serde_json::from_str(
             r#"{"id":"x","title":"t","created_at":"2026-01-01T00:00:00Z","tools":true}"#,
         )
         .unwrap();
         assert!(old.tools && old.tools_edit && old.tools_create);
+        assert_eq!(old.agent, None);
+        // the chosen agent travels by name, and only when there is one
+        let mut with_agent = renamed.clone();
+        with_agent.agent = Some("reviewer".into());
+        store.update_meta(&with_agent).unwrap();
+        let back = store.load(&meta.id).unwrap().meta;
+        assert_eq!(back.agent.as_deref(), Some("reviewer"));
+        assert!(!serde_json::to_string(&renamed).unwrap().contains("agent"));
         store.update_meta(&renamed).unwrap();
 
         store.rewrite(&renamed, &s.messages[..1]).unwrap();

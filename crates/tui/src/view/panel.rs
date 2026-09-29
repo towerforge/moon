@@ -34,9 +34,22 @@ fn help_body(app: &App, h: &HelpState, area: Rect) -> usize {
 pub(super) fn height(app: &App, area: Rect) -> u16 {
     let Some(panel) = &app.panel else { return 0 };
     let body = match panel {
-        Panel::Models(p) | Panel::Sessions(p) | Panel::Files(p) => {
+        Panel::Models(p) | Panel::Sessions(p) | Panel::Agents(p) | Panel::Files(p) => {
             p.rows().len().clamp(1, list_body(area))
         }
+        // the groups fit; inside one, its rows and the note under them
+        Panel::Perms(p) => {
+            let max = (area.height as usize * 2 / 3).max(MIN_BODY);
+            let n = match p.level {
+                crate::app::PermsLevel::Groups => moon_agent::Category::ALL.len(),
+                crate::app::PermsLevel::Group(cat) => {
+                    crate::app::group_rows(cat).len() + crate::app::group_sections(cat) + 3
+                }
+            };
+            n.clamp(MIN_BODY, max)
+        }
+        // a text to write: two thirds of the screen
+        Panel::AgentPrompt(_) => (area.height as usize * 2 / 3).max(MIN_BODY),
         Panel::Browse { picker, .. } => picker.rows().len().clamp(1, list_body(area)),
         Panel::Help(h) => help_body(app, h, area),
         Panel::Machine => machine::BODY,
@@ -44,33 +57,32 @@ pub(super) fn height(app: &App, area: Rect) -> u16 {
             SessionAction::Delete { .. } => 2,
             SessionAction::Rename { .. } => 1,
         },
-        Panel::Approval(a) => a.body_len().clamp(1, list_body(area)),
-        // the catalogue is long: two thirds at most, and it scrolls
-        Panel::Tools(d) => {
-            let max = (area.height as usize * 2 / 3).max(MIN_BODY);
-            tools_lines(&app.theme, d, area.width.saturating_sub(2) as usize)
-                .0
-                .len()
-                .clamp(MIN_BODY, max)
-        }
+        Panel::Approval(a) => a.body_len().clamp(1, list_body(area)) + APPROVAL_PROMPT,
+        Panel::AgentAction { action, .. } => match action {
+            AgentAction::New { .. } | AgentAction::Rename { .. } => 1,
+            AgentAction::Delete { .. } => 2,
+        },
     };
     (body as u16 + CHROME).min(area.height.saturating_sub(CONV_MIN + ABOVE))
 }
 
 /// What a panel puts on screen, whatever it is underneath.
-struct Content {
-    title: String,
+pub(super) struct Content {
+    pub(super) title: String,
     /// Sections shown next to the title, and which one is open. Empty if the
     /// panel has none.
-    tabs: Vec<(&'static str, bool)>,
+    pub(super) tabs: Vec<(&'static str, bool)>,
     /// Right of the title: counts.
-    info: String,
+    pub(super) info: String,
     /// Second row: what the panel is for, the filter, what is being decided.
-    hint: Line<'static>,
-    body: Vec<Line<'static>>,
+    pub(super) hint: Line<'static>,
+    pub(super) body: Vec<Line<'static>>,
+    /// Pinned under the body, over the footer, out of the scroll: the
+    /// question of an approval and its choices. Empty for the rest.
+    pub(super) prompt: Vec<Line<'static>>,
     /// Body rows there are in total and the first one shown, for the `a-b/n`.
-    total: usize,
-    scroll: usize,
+    pub(super) total: usize,
+    pub(super) scroll: usize,
 }
 
 pub(super) fn render(app: &mut App, frame: &mut Frame, area: Rect) {
@@ -82,29 +94,41 @@ pub(super) fn render(app: &mut App, frame: &mut Frame, area: Rect) {
         machine::render(app, frame, area);
         return;
     }
+    // nor the prompt editor: its fields are text boxes
+    if matches!(app.panel, Some(Panel::AgentPrompt(_))) {
+        agent_prompt::render(app, frame, area);
+        return;
+    }
     let t = app.theme.clone();
     let w = area.width as usize;
     // on a short terminal the blank rows are the first to go: the list is
     // what is worth the room
     let compact = area.height < CHROME + 3;
     let chrome = if compact { CHROME - 2 } else { CHROME };
-    let rows = area.height.saturating_sub(chrome) as usize;
+    // an approval keeps its question and choices out of the body's rows
+    let pinned = if matches!(app.panel, Some(Panel::Approval(_))) {
+        APPROVAL_PROMPT as u16
+    } else {
+        0
+    };
+    let rows = area.height.saturating_sub(chrome + pinned) as usize;
     // the last column is the scroll bar's, with a blank one before it, so the
     // body never runs into it
     let body_w = w.saturating_sub(2);
     let keys = app.panel_keys();
-    let cwd = app.cwd.clone();
     let c = if matches!(app.panel, Some(Panel::Help(_))) {
         help_content(app, &t, body_w, rows)
     } else {
         match app.panel.as_mut() {
-            Some(Panel::Models(p)) | Some(Panel::Sessions(p)) | Some(Panel::Files(p)) => {
-                list_content(&t, p, body_w, rows)
-            }
+            Some(Panel::Models(p))
+            | Some(Panel::Sessions(p))
+            | Some(Panel::Agents(p))
+            | Some(Panel::Files(p)) => list_content(&t, p, body_w, rows),
+            Some(Panel::Perms(_)) => perms::perms_content(app, &t, body_w, rows),
             Some(Panel::Browse { picker, .. }) => list_content(&t, picker, body_w, rows),
             Some(Panel::SessionAction { action, .. }) => action_content(&t, action, body_w),
             Some(Panel::Approval(a)) => approval_content(&t, a, body_w, rows),
-            Some(Panel::Tools(d)) => tools_content(&cwd, &t, d, body_w, rows),
+            Some(Panel::AgentAction { action, .. }) => agent_action_content(&t, action, body_w),
             _ => return,
         }
     };
@@ -112,7 +136,13 @@ pub(super) fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     if !compact {
         lines.push(Line::from(""));
     }
+    let head = lines.len();
     lines.extend(c.body);
+    // the prompt sits right under the body's rows, however many it filled
+    if !c.prompt.is_empty() {
+        lines.resize(head + rows, Line::from(""));
+        lines.extend(c.prompt);
+    }
     // the footer always sits on the last row: what does not fit is the body
     lines.resize(area.height.saturating_sub(1) as usize, Line::from(""));
     lines.push(panel_footer(&t, &keys, w, c.total, rows, c.scroll));
@@ -378,6 +408,7 @@ fn list_content(t: &Theme, p: &Picker, w: usize, rows: usize) -> Content {
         });
     }
     Content {
+        prompt: Vec::new(),
         title: p.title.clone(),
         tabs: Vec::new(),
         info: p.title_info.clone(),
@@ -453,6 +484,7 @@ fn action_content(t: &Theme, action: &SessionAction, w: usize) -> Content {
     };
     let total = body.len();
     Content {
+        prompt: Vec::new(),
         title: title.to_string(),
         tabs: Vec::new(),
         info: String::new(),
@@ -463,254 +495,126 @@ fn action_content(t: &Theme, action: &SessionAction, w: usize) -> Content {
     }
 }
 
-/// `/tools`: on the first level the groups of the catalogue, one row each
-/// with what is on in it, and the step limit under them; inside a group,
-/// its entries with their permission as a selector. Both scroll if they
-/// must. No `Continue` row: `Esc` steps out of a group, and applies
-/// whatever is set from the groups.
-fn tools_content(cwd: &str, t: &Theme, d: &mut ToolsDialog, w: usize, rows: usize) -> Content {
-    let (lines, cursor) = tools_lines(t, d, w);
-    let total = lines.len();
-    d.show(cursor, total, rows);
-    let (title, hint) = match d.level {
-        Level::Groups => (
-            "What may the model do?".to_string(),
-            " off: not offered · ask: shown and waits for you · allow: runs on its own".to_string(),
+/// Naming a new agent, renaming one, or confirming that one goes, in the
+/// view's place.
+fn agent_action_content(t: &Theme, action: &AgentAction, w: usize) -> Content {
+    let input_line = |input: &str| {
+        Line::from(vec![
+            Span::styled(" ❯ ", t.accent()),
+            Span::styled(input.to_string(), t.text()),
+            Span::styled("▌", t.soft()),
+        ])
+    };
+    let (title, hint, body) = match action {
+        AgentAction::New { input } => (
+            "New agent".to_string(),
+            " its name is its file: lowercase letters, digits, - and _".to_string(),
+            vec![input_line(input)],
         ),
-        Level::Group(c) => (
-            format!("What may the model do? › {}", c.title()),
-            format!(" {}", c.about()),
+        AgentAction::Rename { name, input } => (
+            format!("Rename {name}"),
+            " the name is the file: the file is renamed with it".to_string(),
+            vec![input_line(input)],
+        ),
+        AgentAction::Delete { name, choice } => (
+            format!("Delete {name}"),
+            " the file is removed; a conversation that chose it falls back to default".to_string(),
+            vec![
+                row_line(
+                    t,
+                    "Delete",
+                    "",
+                    RowState {
+                        selected: *choice == Choice::Delete,
+                        ..RowState::default()
+                    },
+                    w,
+                ),
+                row_line(
+                    t,
+                    "Keep",
+                    "",
+                    RowState {
+                        selected: *choice == Choice::Keep,
+                        ..RowState::default()
+                    },
+                    w,
+                ),
+            ],
         ),
     };
+    let total = body.len();
     Content {
+        prompt: Vec::new(),
         title,
         tabs: Vec::new(),
-        info: cwd.to_string(),
+        info: String::new(),
         hint: Line::from(Span::styled(hint, t.muted())),
-        body: lines.into_iter().skip(d.scroll).take(rows).collect(),
+        body,
         total,
-        scroll: d.scroll,
+        scroll: 0,
     }
-}
-
-/// The body of the tools panel at the level it is at, and the line the
-/// cursor is on, for the scroll.
-pub(super) fn tools_lines(t: &Theme, d: &ToolsDialog, w: usize) -> (Vec<Line<'static>>, usize) {
-    match d.level {
-        Level::Groups => groups_lines(t, d, w),
-        Level::Group(c) => group_lines(t, d, c, w),
-    }
-}
-
-/// The groups: ` ❯ Files  ▸  allow: read files, ls · ask: edit existing
-/// files`, and the steps row after a blank one.
-fn groups_lines(t: &Theme, d: &ToolsDialog, w: usize) -> (Vec<Line<'static>>, usize) {
-    let mut lines = help_text(
-        t,
-        "Only under this directory, and never through a shell. Enter opens a group; ← turns the whole of it off, → turns it on with its defaults.",
-        w,
-    );
-    lines.push(Line::from(""));
-    let label_w = Category::ALL
-        .iter()
-        .map(|c| width(c.title()))
-        .max()
-        .unwrap_or(5);
-    let mut cursor = 0;
-    for (i, c) in Category::ALL.iter().enumerate() {
-        let selected = d.row == i;
-        if selected {
-            cursor = lines.len();
-        }
-        let on = d.group_on(*c);
-        lines.push(panel_row(
-            t,
-            c.title(),
-            if selected {
-                t.soft_bold()
-            } else if on {
-                t.text()
-            } else {
-                t.muted()
-            },
-            "▸",
-            if selected { t.soft() } else { t.accent() },
-            &d.summary(*c),
-            selected,
-            label_w,
-            w,
-        ));
-    }
-    (lines, cursor)
-}
-
-/// Inside a group: its entries, one row each.
-fn group_lines(t: &Theme, d: &ToolsDialog, c: Category, w: usize) -> (Vec<Line<'static>>, usize) {
-    const STEPS: &str = "max steps per message";
-    let members = ToolsDialog::members(c);
-    let steps = c == ToolsDialog::STEPS_GROUP;
-    let id_w = members
-        .iter()
-        .map(|i| width(CATALOG[*i].id))
-        .chain(steps.then(|| width(STEPS)))
-        .max()
-        .unwrap_or(8);
-    let mut lines = Vec::new();
-    let mut cursor = 0;
-    for (n, i) in members.into_iter().enumerate() {
-        let e = &CATALOG[i];
-        let selected = n == d.row;
-        if selected {
-            cursor = lines.len();
-        }
-        lines.push(permission_row(
-            t,
-            e,
-            d.policy.get(e.id),
-            d.found_at(i),
-            selected,
-            id_w,
-            w,
-        ));
-    }
-    if steps {
-        // the limit on every turn, after the capabilities: a number, no off
-        let selected = d.on_steps();
-        if selected {
-            cursor = lines.len();
-        }
-        let on = !d.policy.is_empty();
-        lines.push(panel_row(
-            t,
-            STEPS,
-            if selected {
-                t.soft_bold()
-            } else if on {
-                t.text()
-            } else {
-                t.muted()
-            },
-            &format!("◀ {:^5} ▶", d.max_steps),
-            if selected {
-                t.soft()
-            } else if on {
-                t.accent()
-            } else {
-                t.muted()
-            },
-            "tool calls one message may take",
-            selected,
-            id_w,
-            w,
-        ));
-    }
-    (lines, cursor)
-}
-
-/// ` ❯ git diff      ◀ allow ▶  the changes not yet committed`: the id, the
-/// selector, and what it does; `not installed` in its place, and the row
-/// muted, for a program the machine does not have.
-fn permission_row(
-    t: &Theme,
-    e: &Entry,
-    perm: Permission,
-    found: bool,
-    selected: bool,
-    id_w: usize,
-    w: usize,
-) -> Line<'static> {
-    let on = perm != Permission::Off;
-    let label_style = if selected {
-        t.soft_bold()
-    } else if on && found {
-        t.text()
-    } else {
-        t.muted()
-    };
-    let control_style = match perm {
-        _ if !found => t.muted(),
-        Permission::Allow => t.accent(),
-        Permission::Ask => t.soft(),
-        Permission::Off => t.muted(),
-    };
-    panel_row(
-        t,
-        e.id,
-        label_style,
-        &format!("◀ {:^5} ▶", perm.as_str()),
-        control_style,
-        if found { e.help } else { "not installed" },
-        selected,
-        id_w,
-        w,
-    )
-}
-
-/// One row of the tools panel: the cursor, the label padded to the widest,
-/// the control, and the detail in the room left.
-#[allow(clippy::too_many_arguments)]
-fn panel_row(
-    t: &Theme,
-    label: &str,
-    label_style: Style,
-    control: &str,
-    control_style: Style,
-    detail: &str,
-    selected: bool,
-    id_w: usize,
-    w: usize,
-) -> Line<'static> {
-    // cursor, the label padded, two spaces, the control, two spaces, the
-    // detail, a space
-    let detail_w = w.saturating_sub(3 + id_w + 2 + width(control) + 2 + 1);
-    Line::from(vec![
-        Span::styled(if selected { " ❯ " } else { "   " }, t.accent()),
-        Span::styled(format!("{label:<id_w$}"), label_style),
-        Span::styled("  ", t.text()),
-        Span::styled(control.to_string(), control_style),
-        Span::styled("  ", t.text()),
-        Span::styled(truncate(detail, detail_w), t.muted()),
-    ])
 }
 
 /// Body rows of a command waiting for the ok: the line, the folder, a
 /// blank one and what the command is for.
 pub const RUN_BODY: usize = 4;
 
-/// An edit or a command the model asked for: the file and the counts, or
-/// the command, in the title, the two choices on the second row as chips
-/// (the one the cursor is on painted on `moon`, like an open tab), and the
-/// diff, or the command line, as the body, which scrolls. Nothing is on
-/// disk, and nothing runs, until it is confirmed.
+/// Rows an approval pins under its body: a dashed rule, the question and
+/// the two choices.
+pub(super) const APPROVAL_PROMPT: usize = 4;
+
+/// An edit or a command the model asked for: the kind of action in the
+/// title with the counts on the right, the file or the command under it,
+/// the diff, or the command line, as the body, which scrolls, and under it,
+/// fixed, the question with `1. Yes` and `2. No`. Nothing is on disk, and
+/// nothing runs, until it is confirmed.
 fn approval_content(t: &Theme, a: &mut Approval, w: usize, rows: usize) -> Content {
     a.rows = rows;
     a.scroll_by(0);
-    let chip = |label: &str, on: bool| {
-        Span::styled(
-            format!(" {label} "),
-            if on { t.selected() } else { t.muted() },
+    let lines = match &a.pending {
+        Pending::Edit(e) => diff::lines(t, &e.diff, w),
+        Pending::Run(e) => run_lines(t, e, w),
+    };
+    let hint = Line::from(Span::styled(
+        format!(" {}", truncate(a.subject(), w.saturating_sub(2))),
+        t.muted(),
+    ));
+    let (before, what, after) = a.question();
+    let choice = |n: usize, label: &str, selected: bool| {
+        row_line(
+            t,
+            label,
+            "",
+            RowState {
+                n: Some(n),
+                num_w: 3,
+                selected,
+                ..RowState::default()
+            },
+            w,
         )
     };
-    let (note, lines) = match &a.pending {
-        Pending::Edit(e) => (
-            "  the model wants this change · nothing is written until you apply",
-            diff::lines(t, &e.diff, w),
-        ),
-        Pending::Run(e) => (
-            "  the model wants to run this · nothing runs until you confirm",
-            run_lines(t, e, w),
-        ),
-    };
-    let hint = Line::from(vec![
-        Span::styled(" ", t.text()),
-        chip(a.verb(), a.choice == EditChoice::Apply),
-        Span::styled(" ", t.text()),
-        chip("Skip", a.choice == EditChoice::Skip),
-        Span::styled(note, t.muted()),
-    ]);
+    let prompt = vec![
+        Line::from(Span::styled(
+            format!(" {}", "╌".repeat(w.saturating_sub(1))),
+            t.line(),
+        )),
+        Line::from(vec![
+            Span::styled(format!(" {before}"), t.text()),
+            Span::styled(
+                truncate(what, w.saturating_sub(width(before) + 3)),
+                t.bold(),
+            ),
+            Span::styled(after, t.text()),
+        ]),
+        choice(1, "Yes", a.choice == EditChoice::Yes),
+        choice(2, "No", a.choice == EditChoice::No),
+    ];
     let total = lines.len();
     Content {
-        title: a.title(),
+        prompt,
+        title: a.title().to_string(),
         tabs: Vec::new(),
         info: a.info(),
         hint,
@@ -774,6 +678,7 @@ fn help_content(app: &mut App, t: &Theme, w: usize, rows: usize) -> Content {
         ),
     };
     Content {
+        prompt: Vec::new(),
         title: "Help".to_string(),
         tabs: HelpTab::ALL
             .iter()
@@ -851,8 +756,8 @@ const BASICS: &[(&str, &str)] = &[
         "what is attached and what it costs, or ctrl+f; the count sits in the status row",
     ),
     (
-        "/tools",
-        "let the model read, edit or create files under this directory, each write with your ok",
+        "/agent",
+        "who talks to the model and what it may do: one file per agent with its permissions; ctrl+t edits them, ctrl+e the prompt",
     ),
     (
         "@path",
@@ -879,13 +784,15 @@ fn general_lines(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
     lines.push(help_section(t, "Files", w));
     lines.push(Line::from(""));
     let config = app.config_note();
-    let files: [(&str, &str); 4] = [
+    let agents = app.agents_note();
+    let files: [(&str, &str); 5] = [
         (
             "MOON.md",
             "read into every conversation; /context shows what the model is actually sent",
         ),
         ("Sessions", "saved automatically, as JSONL"),
         ("Config", &config),
+        ("Agents", &agents),
         (
             "Updates",
             "`moon update` brings in the latest release from GitHub; with update_check = true moon says at startup when there is one",

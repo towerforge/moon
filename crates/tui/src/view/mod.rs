@@ -7,19 +7,19 @@ use ratatui::widgets::{Clear, Paragraph, Scrollbar, ScrollbarOrientation, Scroll
 use ratatui::Frame;
 
 use crate::app::{
-    App, Approval, Choice, EditChoice, HelpState, HelpTab, Level, Panel, SessionAction, ToolsDialog,
+    AgentAction, App, Approval, Choice, EditChoice, HelpState, HelpTab, Panel, SessionAction,
 };
 use crate::commands::{KEYS, SPECS};
 use crate::picker::{Picker, PickerGroup, Row};
 use crate::theme::Theme;
 use crate::wrap::{truncate, width, wrap_line};
-use moon_agent::{Category, Entry, Exec, Pending, CATALOG};
-use moon_core::Permission;
-use ratatui::style::Style;
+use moon_agent::{Exec, Pending};
 
+mod agent_prompt;
 mod diff;
 mod machine;
 mod panel;
+mod perms;
 #[cfg(test)]
 mod tests;
 

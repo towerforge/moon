@@ -1,6 +1,6 @@
 //! What an agent can do. A closed enum: no delete, no network, and no shell.
 //! `run_command` runs one of the commands of a fixed catalogue, the ones
-//! that are on in `/tools`, as a program with its arguments, never through a
+//! that the agent's file turns on, as a program with its arguments, never through a
 //! shell. Every tool goes through the sandbox for its paths; the two that
 //! write only *prepare* an edit, and the harness applies it once the user
 //! says so; a command set to `ask` waits the same way.
@@ -22,7 +22,7 @@ pub mod run_command;
 mod tests;
 pub mod write_file;
 
-pub use catalog::{Category, Entry, Kind, Policy, CATALOG};
+pub use catalog::{Category, Entry, Kind, Policy, Section, CATALOG};
 pub use diff::{diff, Diff, DiffKind, DiffLine};
 pub use run_command::{Exec, Output};
 

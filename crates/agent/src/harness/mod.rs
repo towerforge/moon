@@ -96,7 +96,7 @@ impl fmt::Display for Stop {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Stop::Cancelled => "cancelled",
-            Stop::TooManyRounds => "too many steps for one message · /tools to raise the limit",
+            Stop::TooManyRounds => "too many steps for one message · /agent to raise the limit",
             Stop::TooManyRejections => "too many paths refused by the sandbox",
         })
     }

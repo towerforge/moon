@@ -139,10 +139,15 @@ impl App {
             /// Out of the tree and back to the files panel.
             Back,
             Choose,
-            /// The tree, to attach something.
+            /// The tree, to attach something; in the agent picker, a new
+            /// agent.
             Add,
             Delete,
             Rename,
+            /// In the agent picker: the highlighted agent's permissions.
+            Edit,
+            /// In the agent picker: its description and prompt.
+            Prompt,
         }
         if matches!(self.panel, Some(Panel::SessionAction { .. })) {
             self.handle_session_action_key(key);
@@ -152,8 +157,16 @@ impl App {
             self.handle_approval_key(key, tx);
             return;
         }
-        if matches!(self.panel, Some(Panel::Tools(_))) {
-            self.handle_tools_key(key);
+        if matches!(self.panel, Some(Panel::Perms(_))) {
+            self.handle_perms_key(key);
+            return;
+        }
+        if matches!(self.panel, Some(Panel::AgentPrompt(_))) {
+            self.handle_agent_prompt_key(key);
+            return;
+        }
+        if matches!(self.panel, Some(Panel::AgentAction { .. })) {
+            self.handle_agent_action_key(key);
             return;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -211,6 +224,8 @@ impl App {
                     Panel::Browse { .. } => Outcome::Back,
                     _ => Outcome::Close,
                 };
+                // the keys that belong to the agent picker alone
+                let agents = matches!(panel, Panel::Agents(_));
                 let Some(p) = panel.picker_mut() else {
                     return;
                 };
@@ -253,6 +268,9 @@ impl App {
                     KeyCode::Delete => Outcome::Delete,
                     KeyCode::Char('d') if ctrl => Outcome::Delete,
                     KeyCode::Char('r') if ctrl => Outcome::Rename,
+                    // t as in tools, whose table this opens
+                    KeyCode::Char('t') if ctrl && agents => Outcome::Edit,
+                    KeyCode::Char('e') if ctrl && agents => Outcome::Prompt,
                     KeyCode::Backspace => {
                         p.backspace();
                         Outcome::Nothing
@@ -278,12 +296,20 @@ impl App {
         match outcome {
             Outcome::Nothing => {}
             Outcome::Close => {
-                // `/model` closed without picking: it says which one stays
-                if matches!(self.panel.take(), Some(Panel::Models(_))) && self.echo.is_some() {
-                    if let Some(c) = &self.current {
-                        let q = c.qualified();
-                        self.notify(format!("kept model as {q}"));
+                // `/model` and `/agent` closed without picking: they say
+                // which one stays
+                match self.panel.take() {
+                    Some(Panel::Models(_)) if self.echo.is_some() => {
+                        if let Some(c) = &self.current {
+                            let q = c.qualified();
+                            self.notify(format!("kept model as {q}"));
+                        }
                     }
+                    Some(Panel::Agents(_)) if self.echo.is_some() => {
+                        let kept = self.agent.clone();
+                        self.notify(format!("kept agent as {kept}"));
+                    }
+                    _ => {}
                 }
             }
             Outcome::Choose => match self.panel.take() {
@@ -305,6 +331,12 @@ impl App {
                         self.load_session(&id, tx);
                     }
                 }
+                Some(Panel::Agents(p)) => {
+                    if let Some(it) = p.current() {
+                        let name = it.id.clone();
+                        self.select_agent(&name);
+                    }
+                }
                 // these two keep their panel: it is put back before acting on
                 // it, since both rebuild the list they are standing on
                 Some(panel @ Panel::Files(_)) => {
@@ -318,18 +350,40 @@ impl App {
                 _ => {}
             },
             Outcome::Back => self.open_files_panel(),
-            Outcome::Add => {
-                if let Some(Panel::Files(_)) = &self.panel {
-                    self.open_browser(PathBuf::new());
-                }
-            }
+            Outcome::Add => match &self.panel {
+                Some(Panel::Files(_)) => self.open_browser(PathBuf::new()),
+                Some(Panel::Agents(_)) => self.open_agent_new(),
+                _ => {}
+            },
             Outcome::Delete => match &self.panel {
                 // in the files panel `del` takes the highlighted file out,
                 // the same as enter on it
                 Some(Panel::Files(_)) => self.files_panel_detach(),
+                Some(Panel::Agents(_)) => self.open_agent_delete(),
                 _ => self.open_session_action(true),
             },
-            Outcome::Rename => self.open_session_action(false),
+            Outcome::Rename => match &self.panel {
+                Some(Panel::Agents(_)) => self.open_agent_rename(),
+                _ => self.open_session_action(false),
+            },
+            Outcome::Edit => {
+                if let Some(name) = self.highlighted_agent() {
+                    self.open_perms(&name, true);
+                }
+            }
+            Outcome::Prompt => {
+                if let Some(name) = self.highlighted_agent() {
+                    self.open_agent_prompt(&name);
+                }
+            }
+        }
+    }
+
+    /// The agent under the cursor, when the agent picker is the panel.
+    fn highlighted_agent(&self) -> Option<String> {
+        match &self.panel {
+            Some(Panel::Agents(p)) => p.current().map(|it| it.id.clone()),
+            _ => None,
         }
     }
 

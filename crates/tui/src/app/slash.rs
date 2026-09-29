@@ -162,7 +162,11 @@ impl App {
                 }
             }
             Command::Files => self.open_files_panel(),
-            Command::Tools => self.open_tools_dialog(),
+            Command::Tools => {
+                self.notify("the permissions live in /agent now · opening it");
+                self.open_agents_permissions();
+            }
+            Command::Agent => self.open_agent_picker(),
             Command::Context => self.show_context(),
             Command::Machine => self.panel = Some(Panel::Machine),
             Command::Help => self.panel = Some(Panel::Help(HelpState::default())),
@@ -215,6 +219,7 @@ impl App {
             tools: self.tools_on,
             tools_edit: self.tools_scope().0,
             tools_create: self.tools_scope().1,
+            agent: (self.agent != DEFAULT_AGENT).then(|| self.agent.clone()),
             path: Default::default(),
         });
         let path = path.unwrap_or_else(|| {

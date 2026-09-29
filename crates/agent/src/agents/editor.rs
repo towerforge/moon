@@ -44,8 +44,8 @@ When a request is done, say in one sentence what you changed.";
 /// Reads, edits and creates, every write with the user's ok.
 pub fn editor() -> Agent {
     Agent {
-        name: "editor",
-        prompt: PROMPT,
+        name: "editor".into(),
+        prompt: PROMPT.into(),
         policy: Policy::from_pairs([
             (READ_FILES, Permission::Allow),
             (EDIT_FILES, Permission::Ask),
@@ -57,8 +57,8 @@ pub fn editor() -> Agent {
 /// Reads and lists, nothing else.
 pub fn reader() -> Agent {
     Agent {
-        name: "reader",
-        prompt: READER_PROMPT,
+        name: "reader".into(),
+        prompt: READER_PROMPT.into(),
         policy: Policy::from_pairs([(READ_FILES, Permission::Allow)]),
     }
 }

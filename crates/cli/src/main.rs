@@ -82,13 +82,17 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum ConfigCmd {
-    /// Write the commented configuration and tools.toml next to it
-    Init {
-        /// Overwrite if it already exists
-        #[arg(long)]
-        force: bool,
+    /// Write what is missing: the commented configuration, and the agents
+    /// folder next to it with default.toml and reviewer.toml
+    Init,
+    /// Write the configuration, default.toml and reviewer.toml again as
+    /// they come from the factory; your other agents and your sessions stay
+    Reset {
+        /// Do it without asking
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
-    /// File path
+    /// Where the files are
     Path,
     /// Effective configuration
     Show,
@@ -166,9 +170,7 @@ async fn main() -> anyhow::Result<()> {
                 cwd,
                 root,
                 state_dir: Some(paths.state_dir.clone()),
-                tools_file: config_path
-                    .parent()
-                    .map(|d| d.join(moon_core::ToolsFile::FILE)),
+                agents_dir: config_path.parent().map(|d| d.join("agents")),
             })
             .await
         }
@@ -225,60 +227,139 @@ fn shorten_home(p: &std::path::Path) -> String {
     }
 }
 
-/// `moon config init`: the commented configuration, and `tools.toml` next
-/// to it with the whole catalogue, reading on and everything else off. A
-/// file that is there is left alone unless `force`, and said so; nothing
-/// written at all is an error.
-fn init_files(config: &std::path::Path, force: bool) -> anyhow::Result<Vec<String>> {
-    let tools = config
+/// The agents folder next to the configuration.
+fn agents_dir(config: &std::path::Path) -> anyhow::Result<PathBuf> {
+    config
         .parent()
-        .map(|d| d.join(moon_core::ToolsFile::FILE))
-        .ok_or_else(|| anyhow!("{} has no folder", config.display()))?;
+        .map(|d| d.join("agents"))
+        .ok_or_else(|| anyhow!("{} has no folder", config.display()))
+}
+
+/// `moon config init`: the commented configuration, and the agents folder
+/// next to it with `default.toml` — reading on and everything else off, or
+/// what an older `tools.toml` or `[tools]` block had — and `reviewer.toml`.
+/// A file that is there is left alone and said so; nothing written at all
+/// is an error that names the way to start over.
+fn init_files(config: &std::path::Path) -> anyhow::Result<Vec<String>> {
+    let agents = agents_dir(config)?;
     let mut said = Vec::new();
     let mut wrote = false;
-    if config.exists() && !force {
-        said.push(format!(
-            "{} already exists: left as it is",
-            config.display()
-        ));
+    if config.exists() {
+        said.push(format!("{} already there: left as it is", config.display()));
     } else {
         Config::write_template(config, true)?;
         said.push(format!("configuration written to {}", config.display()));
         wrote = true;
     }
-    if tools.exists() && !force {
-        said.push(format!("{} already exists: left as it is", tools.display()));
-    } else {
-        let policy = moon_agent::Policy::from_pairs([(
-            moon_core::config::ids::READ_FILES,
-            moon_core::Permission::Allow,
-        )]);
-        let text = moon_agent::catalog::render_tools_file(&policy, 8);
-        moon_core::ToolsFile::write_text(&tools, &text)?;
-        said.push(format!("tools written to {}", tools.display()));
-        wrote = true;
+    // the old keys of a configuration that is there count once, here; a
+    // configuration that does not parse is no reason not to have an agent
+    let legacy = Config::load_or_default(config)
+        .map(|(cfg, _)| cfg.tools)
+        .unwrap_or_default();
+    let default = agents.join(moon_agent::file_name(moon_agent::DEFAULT_AGENT));
+    match moon_agent::ensure_default(&agents, &legacy).map_err(|e| anyhow!(e))? {
+        Some(from) => {
+            said.push(format!(
+                "agent default written to {} · {from}",
+                default.display()
+            ));
+            wrote = true;
+        }
+        None => said.push(format!(
+            "{} already there: left as it is",
+            default.display()
+        )),
+    }
+    for (name, file) in moon_agent::AgentFile::factory() {
+        if name == moon_agent::DEFAULT_AGENT {
+            continue;
+        }
+        let path = agents.join(moon_agent::file_name(name));
+        if path.exists() {
+            said.push(format!("{} already there: left as it is", path.display()));
+        } else {
+            moon_core::write_text(&path, &file.to_toml())?;
+            said.push(format!("agent {name} written to {}", path.display()));
+            wrote = true;
+        }
     }
     if !wrote {
-        bail!("{} (use --force to overwrite both)", said.join("; "));
+        bail!(
+            "{}\neverything is already there · `moon config reset` starts over",
+            said.join("\n")
+        );
     }
     Ok(said)
 }
 
+/// The files `moon config reset` writes again: the configuration, and the
+/// agents `moon config init` makes.
+fn factory_files(config: &std::path::Path) -> anyhow::Result<Vec<PathBuf>> {
+    let agents = agents_dir(config)?;
+    let mut v = vec![config.to_path_buf()];
+    v.extend(
+        moon_agent::AgentFile::factory()
+            .into_iter()
+            .map(|(name, _)| agents.join(moon_agent::file_name(name))),
+    );
+    Ok(v)
+}
+
+/// `moon config reset`: the factory files written again, whatever they
+/// hold now. Other agents and the sessions are not touched.
+fn reset_files(config: &std::path::Path) -> anyhow::Result<Vec<String>> {
+    let agents = agents_dir(config)?;
+    let mut said = Vec::new();
+    Config::write_template(config, true)?;
+    said.push(format!("configuration written to {}", config.display()));
+    for (name, file) in moon_agent::AgentFile::factory() {
+        let path = agents.join(moon_agent::file_name(name));
+        moon_core::write_text(&path, &file.to_toml())?;
+        said.push(format!("agent {name} written to {}", path.display()));
+    }
+    Ok(said)
+}
+
+/// `reset` shows what it would overwrite and asks, unless told not to;
+/// with nobody at the terminal it needs `--yes`.
+fn confirm_reset(files: &[PathBuf]) -> anyhow::Result<bool> {
+    println!("these files go back to how moon ships them:");
+    for f in files {
+        println!("  {}", f.display());
+    }
+    println!("your other agents and your sessions stay.");
+    if !std::io::stdin().is_terminal() {
+        bail!("nobody to ask: pass --yes to reset without a prompt");
+    }
+    print!("overwrite them? [y/N] ");
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
+}
+
 fn config_cmd(action: &ConfigCmd, path: &std::path::Path, paths: &Paths) -> anyhow::Result<()> {
     match action {
-        ConfigCmd::Init { force } => {
-            for line in init_files(path, *force)? {
+        ConfigCmd::Init => {
+            for line in init_files(path)? {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        ConfigCmd::Reset { yes } => {
+            if !yes && !confirm_reset(&factory_files(path)?)? {
+                println!("nothing written");
+                return Ok(());
+            }
+            for line in reset_files(path)? {
                 println!("{line}");
             }
             Ok(())
         }
         ConfigCmd::Path => {
             println!("{}", path.display());
-            if let Some(dir) = path.parent() {
-                println!(
-                    "tools:    {}",
-                    dir.join(moon_core::ToolsFile::FILE).display()
-                );
+            if let Ok(agents) = agents_dir(path) {
+                println!("agents:   {}", agents.display());
             }
             println!("sessions: {}", paths.sessions_dir().display());
             println!("log:      {}", paths.log_file().display());
@@ -677,39 +758,82 @@ mod tests {
     use super::*;
 
     #[test]
-    fn config_init_writes_both_files_and_leaves_what_is_there() {
+    fn config_init_writes_what_is_missing_and_reset_starts_over() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("moon").join("config.toml");
-        let tools = dir.path().join("moon").join("tools.toml");
-        let said = init_files(&config, false).unwrap();
-        assert_eq!(said.len(), 2, "{said:?}");
-        assert!(config.exists() && tools.exists());
-        // the tools file lists the whole catalogue, reading on
-        let text = std::fs::read_to_string(&tools).unwrap();
+        let agents = dir.path().join("moon").join("agents");
+        let default = agents.join("default.toml");
+        let reviewer = agents.join("reviewer.toml");
+        let said = init_files(&config).unwrap();
+        assert_eq!(said.len(), 3, "{said:?}");
+        assert!(config.exists() && default.exists() && reviewer.exists());
+        // default lists the whole catalogue, reading on and nothing else
+        let text = std::fs::read_to_string(&default).unwrap();
         for e in moon_agent::CATALOG {
             assert!(text.contains(&format!("\"{}\"", e.id)), "{}", e.id);
         }
-        let back = moon_core::ToolsFile::load(&tools).unwrap().unwrap();
-        assert_eq!(back.permissions.len(), 1);
+        let back = moon_agent::AgentFile::load(&default).unwrap();
+        assert_eq!(back.policy().entries().len(), 1);
+        assert!(back.policy().reads());
+        assert!(back.prompt.is_none());
+        let reviewer_file = moon_agent::AgentFile::load(&reviewer).unwrap();
+        assert!(reviewer_file
+            .prompt
+            .as_deref()
+            .unwrap()
+            .contains("# Reviewing"));
+        // again: everything is there, nothing is written, and it says how
+        std::fs::write(&default, "max_steps = 3\n").unwrap();
+        let err = init_files(&config).unwrap_err().to_string();
+        assert!(err.contains("moon config reset"), "{err}");
         assert_eq!(
-            back.permissions.get(moon_core::config::ids::READ_FILES),
-            Some(&moon_core::Permission::Allow)
+            std::fs::read_to_string(&default).unwrap(),
+            "max_steps = 3\n"
         );
-        // again: both are there, nothing is written, and it says how to
-        std::fs::write(&tools, "max_steps = 3\n").unwrap();
-        let err = init_files(&config, false).unwrap_err().to_string();
-        assert!(err.contains("--force"), "{err}");
-        assert_eq!(std::fs::read_to_string(&tools).unwrap(), "max_steps = 3\n");
-        // one missing: that one is written, the other left
+        // one missing: that one is written, the others left
         std::fs::remove_file(&config).unwrap();
-        let said = init_files(&config, false).unwrap();
+        let said = init_files(&config).unwrap();
         assert!(said[0].starts_with("configuration written"), "{said:?}");
         assert!(said[1].contains("left as it is"), "{said:?}");
-        assert_eq!(std::fs::read_to_string(&tools).unwrap(), "max_steps = 3\n");
-        // force: both rewritten
-        init_files(&config, true).unwrap();
-        assert!(std::fs::read_to_string(&tools)
+        assert!(said[2].contains("left as it is"), "{said:?}");
+        assert_eq!(
+            std::fs::read_to_string(&default).unwrap(),
+            "max_steps = 3\n"
+        );
+        // an old tools.toml is what a missing default starts from
+        std::fs::remove_file(&default).unwrap();
+        std::fs::write(
+            dir.path().join("moon").join("tools.toml"),
+            "[permissions]\n\"git diff\" = \"allow\"\n",
+        )
+        .unwrap();
+        let said = init_files(&config).unwrap();
+        assert!(said[1].contains("tools.toml"), "{said:?}");
+        assert!(moon_agent::AgentFile::load(&default)
             .unwrap()
-            .contains("[permissions]"));
+            .policy()
+            .allows("git diff"));
+        // reset: the three factory files again, another agent untouched
+        std::fs::write(agents.join("mine.toml"), "description = \"x\"\n").unwrap();
+        std::fs::write(&reviewer, "max_steps = 1\n").unwrap();
+        let files = factory_files(&config).unwrap();
+        assert_eq!(
+            files,
+            vec![config.clone(), default.clone(), reviewer.clone()]
+        );
+        let said = reset_files(&config).unwrap();
+        assert_eq!(said.len(), 3, "{said:?}");
+        assert!(moon_agent::AgentFile::load(&default)
+            .unwrap()
+            .policy()
+            .reads());
+        assert_eq!(
+            moon_agent::AgentFile::load(&reviewer).unwrap().max_steps,
+            Some(moon_agent::DEFAULT_STEPS)
+        );
+        assert_eq!(
+            std::fs::read_to_string(agents.join("mine.toml")).unwrap(),
+            "description = \"x\"\n"
+        );
     }
 }

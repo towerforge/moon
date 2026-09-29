@@ -14,8 +14,8 @@ pub mod session;
 pub mod types;
 
 pub use config::{
-    Config, ConfigSource, GeneralConfig, Permission, ProviderConfig, ThemeConfig, ToolsConfig,
-    ToolsFile,
+    write_text, Config, ConfigSource, GeneralConfig, Permission, ProviderConfig, ThemeConfig,
+    ToolsConfig,
 };
 pub use context::{Attachment, Spec};
 pub use error::{ConfigError, ProviderError, SessionError};

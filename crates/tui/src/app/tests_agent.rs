@@ -14,6 +14,7 @@ use serde_json::json;
 
 use super::tests::{app, key, last_answer, type_text};
 use super::*;
+use moon_agent::Policy;
 
 type Rx = mpsc::UnboundedReceiver<Action>;
 type Requests = Arc<Mutex<Vec<ChatRequest>>>;
@@ -99,7 +100,7 @@ pub(super) fn app_with_fake(root: &Path, script: Vec<Vec<ChatEvent>>) -> (App, T
         cwd: "~/p".into(),
         root: root.to_path_buf(),
         state_dir: None,
-        tools_file: None,
+        agents_dir: None,
     });
     app.loading = false;
     assert!(app.current.is_some(), "{:?}", app.items);
@@ -141,159 +142,186 @@ pub(super) fn project() -> tempfile::TempDir {
     dir
 }
 
+/// An agents folder as `moon config init` leaves it: default.toml and
+/// reviewer.toml.
+pub(super) fn agents_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, file) in moon_agent::AgentFile::factory() {
+        std::fs::write(dir.path().join(moon_agent::file_name(name)), file.to_toml()).unwrap();
+    }
+    dir
+}
+
+/// `default`'s permissions as its definition holds them, on or off.
+pub(super) fn yours(app: &App) -> Policy {
+    app.def_of(DEFAULT_AGENT)
+        .expect("default is defined")
+        .policy
+}
+
 pub(super) fn text(spans: &[Span<'static>]) -> String {
     spans.iter().map(|s| s.content.to_string()).collect()
 }
 
+/// The cell cursor onto one capability, inside its group's table.
+pub(super) fn cell_on(app: &mut App, id: &str) {
+    let i = moon_agent::CATALOG
+        .iter()
+        .position(|e| e.id == id)
+        .unwrap_or_else(|| panic!("{id} is not in the catalogue"));
+    let cat = moon_agent::CATALOG[i].category;
+    let at = group_rows(cat)
+        .iter()
+        .position(|r| *r == PermRow::Entry(i))
+        .unwrap();
+    let Some(Panel::Perms(p)) = app.panel.as_mut() else {
+        panic!("expected the permissions table")
+    };
+    p.level = PermsLevel::Group(cat);
+    p.perm = at;
+}
+
+/// The first-level cursor onto a group's row.
+pub(super) fn groups_on(app: &mut App, cat: moon_agent::Category) {
+    let at = moon_agent::Category::ALL
+        .iter()
+        .position(|x| *x == cat)
+        .unwrap();
+    let Some(Panel::Perms(p)) = app.panel.as_mut() else {
+        panic!("expected the permissions table")
+    };
+    p.level = PermsLevel::Groups;
+    p.row = at;
+}
+
+/// The cell cursor onto the step limit, inside `Editor`.
+pub(super) fn steps_on(app: &mut App) {
+    let cat = moon_agent::Category::Editor;
+    let at = group_rows(cat)
+        .iter()
+        .position(|r| *r == PermRow::Steps)
+        .unwrap();
+    let Some(Panel::Perms(p)) = app.panel.as_mut() else {
+        panic!("expected the permissions table")
+    };
+    p.level = PermsLevel::Group(cat);
+    p.perm = at;
+}
+
 #[tokio::test]
 async fn the_switch_and_what_it_shows() {
-    use moon_agent::Category;
+    use moon_core::config::ids::{CREATE_FILES, EDIT_FILES, READ_FILES};
     let dir = project();
     let (mut app, tx, _rx) = app();
     app.root = dir.path().to_path_buf();
     assert!(!app.tools_on);
-    assert!(app.edit_mode_span().is_none());
+    // off, the marker still names the agent everything would run through
+    assert_eq!(app.edit_mode_span().unwrap().content, "⏵ default · all off");
     assert!(!text(&app.model_spans()).contains("edits"));
 
-    // `/tools` is the panel, on its groups: enter opens `Files`, enter on
-    // its first row, `read files`, turns it on; esc steps out and esc
-    // applies — there is no cancel
+    // `/tools` is an alias now: the table over the chosen agent
     type_text(&mut app, &tx, "/tools");
     app.update(key(KeyCode::Enter), &tx);
-    assert!(
-        matches!(&app.panel, Some(Panel::Tools(d)) if d.policy.is_empty() && d.level == Level::Groups && d.row == 0)
-    );
-    app.update(key(KeyCode::Enter), &tx);
-    assert!(
-        matches!(&app.panel, Some(Panel::Tools(d)) if d.level == Level::Group(Category::Editor) && d.row == 0)
-    );
-    app.update(key(KeyCode::Enter), &tx);
-    assert!(matches!(&app.panel, Some(Panel::Tools(d)) if d.policy.reads()));
-    // off, the writing rows start off too; turn them on as well: they ask
-    app.update(key(KeyCode::Down), &tx);
-    app.update(key(KeyCode::Enter), &tx);
-    app.update(key(KeyCode::Down), &tx);
-    app.update(key(KeyCode::Enter), &tx);
-    let Some(Panel::Tools(d)) = &app.panel else {
-        panic!("expected the tools panel")
-    };
-    assert!(d.policy.reads() && d.policy.edits() && d.policy.creates());
-    assert_eq!(
-        d.policy.get(moon_core::config::ids::EDIT_FILES),
-        moon_core::Permission::Ask
-    );
+    {
+        let Some(Panel::Perms(p)) = &app.panel else {
+            panic!("expected the permissions table")
+        };
+        assert_eq!(p.name, "default");
+        assert!(!p.from_picker);
+    }
     assert!(!app.tools_on);
-    app.update(key(KeyCode::Esc), &tx);
-    assert!(matches!(&app.panel, Some(Panel::Tools(d)) if d.level == Level::Groups && d.row == 0));
-    app.update(key(KeyCode::Esc), &tx);
-    assert!(app.panel.is_none());
-    assert!(app.tools_on);
-    assert!(app.harness.is_some());
-    // the permanent sign, in `moon-soft` and bold, at the left of the hints
-    // row: all three are on, so it lists all three
+    // enter turns a row on to what the catalogue says — allow for what
+    // only looks, ask for what writes — saved at once, and the first one
+    // already turns the tools on; ←→ walk off · ask · allow
+    cell_on(&mut app, READ_FILES);
+    app.update(key(KeyCode::Enter), &tx);
+    assert!(app.tools_on && app.harness.is_some());
+    assert_eq!(yours(&app).get(READ_FILES), moon_core::Permission::Allow);
+    cell_on(&mut app, EDIT_FILES);
+    app.update(key(KeyCode::Enter), &tx);
+    cell_on(&mut app, CREATE_FILES);
+    app.update(key(KeyCode::Enter), &tx);
+    assert!(yours(&app).reads() && yours(&app).edits() && yours(&app).creates());
+    assert_eq!(yours(&app).get(EDIT_FILES), moon_core::Permission::Ask);
+    // the permanent sign, in `moon-soft` and bold, at the left of the
+    // hints row: all three are on, so it lists all three
     let mode = app.edit_mode_span().expect("edit mode indicator");
-    assert_eq!(mode.content, "⏵⏵ Read · Edit · Create");
+    assert_eq!(mode.content, "⏵⏵ default · Read · Edit · Create");
     assert_eq!(mode.style.fg, Some(app.theme.moon_soft));
     assert!(!text(&app.model_spans()).contains("edits"));
-    assert!(app.hints().contains("/tools"));
-    // not a git repository: said once, in the conversation, under `/tools`
-    let answer = last_answer(&app);
-    assert!(answer.contains("not a git repository"), "{answer}");
-    assert!(
-        answer.contains("allow: read files")
-            && answer.contains("ask: edit existing files, create new files"),
-        "{answer}"
-    );
+    assert!(app.hints().contains("/agent"));
     // the agent's rules reach the system prompt
     assert!(app.system_prompt_for(&[]).unwrap().contains("no shell"));
-
-    // esc with nothing touched still applies, but there is nothing to
-    // change: the state stays as it is
-    type_text(&mut app, &tx, "/tools");
-    app.update(key(KeyCode::Enter), &tx);
+    // esc steps back to the groups, and out
+    app.update(key(KeyCode::Esc), &tx);
+    assert!(matches!(&app.panel, Some(Panel::Perms(p)) if p.level == PermsLevel::Groups));
     app.update(key(KeyCode::Esc), &tx);
     assert!(app.panel.is_none());
-    assert!(app.tools_on);
+    // not a git repository: said once, under the command's echo
+    let answer = last_answer(&app);
+    assert!(answer.contains("not a git repository"), "{answer}");
 
-    // `←` on `Files` turns the whole group off, editing and creating with
-    // reading: nothing on, and esc turns it off
+    // `←` on the editor group turns your side of the whole of it off:
+    // nothing granted is tools off
     type_text(&mut app, &tx, "/tools");
     app.update(key(KeyCode::Enter), &tx);
+    groups_on(&mut app, moon_agent::Category::Editor);
     app.update(key(KeyCode::Left), &tx);
-    assert!(matches!(&app.panel, Some(Panel::Tools(d)) if d.policy.is_empty()));
+    assert!(!app.tools_on && app.harness.is_none());
+    assert!(yours(&app).is_empty());
+    assert!(app.system_prompt_for(&[]).is_none());
+    let notice = app.notice.clone().map(|(x, _)| x).unwrap_or_default();
+    assert!(notice.contains("tools off"), "{notice}");
     app.update(key(KeyCode::Esc), &tx);
     assert!(app.panel.is_none());
-    assert!(!app.tools_on);
-    assert!(app.harness.is_none());
-    assert!(app.system_prompt_for(&[]).is_none());
-    assert!(last_answer(&app).contains("tools off"));
 
     // whatever follows the command is ignored, as with `/model`
     type_text(&mut app, &tx, "/tools on");
     app.update(key(KeyCode::Enter), &tx);
-    assert!(matches!(app.panel, Some(Panel::Tools(_))));
+    assert!(matches!(app.panel, Some(Panel::Perms(_))));
 }
 
 #[tokio::test]
-async fn the_tools_panel_turns_it_on_and_tunes_it() {
+async fn the_table_turns_it_on_and_tunes_it() {
+    use moon_core::config::ids::{EDIT_FILES, READ_FILES};
     let dir = project();
     let (mut app, tx, _rx) = app();
     app.root = dir.path().to_path_buf();
     type_text(&mut app, &tx, "/tools");
     app.update(key(KeyCode::Enter), &tx);
-    let Some(Panel::Tools(d)) = &app.panel else {
-        panic!("expected the tools panel")
-    };
-    assert!(d.policy.is_empty());
-    assert_eq!((d.max_steps, d.row, d.level), (8, 0, Level::Groups));
-    assert_eq!(d.found.len(), moon_agent::CATALOG.len());
-    // enter opens `Editor`; space turns the row under the cursor on, ↓
-    // walks; ↑ from the top wraps to its last row, the step limit, where
-    // ←→ change the number; esc applies it all on its way back to the
-    // groups, there is no cancel and no separate confirm row
+    {
+        let Some(Panel::Perms(p)) = &app.panel else {
+            panic!("expected the permissions table")
+        };
+        assert_eq!(p.found.len(), moon_agent::CATALOG.len());
+    }
+    assert!(yours(&app).is_empty());
+    assert_eq!(app.steps_of(DEFAULT_AGENT), 8);
+    // reading to allow, editing to ask, and the step limit: a digit fixes
+    // it, enter adds one; every step saved on the spot
+    cell_on(&mut app, READ_FILES);
     app.update(key(KeyCode::Enter), &tx);
-    app.update(key(KeyCode::Char(' ')), &tx);
-    app.update(key(KeyCode::Down), &tx);
-    app.update(key(KeyCode::Char(' ')), &tx);
-    app.update(key(KeyCode::Up), &tx);
-    app.update(key(KeyCode::Up), &tx);
-    app.update(key(KeyCode::Left), &tx);
-    app.update(key(KeyCode::Left), &tx);
-    let Some(Panel::Tools(d)) = &app.panel else {
-        panic!("expected the tools panel")
-    };
-    assert!(d.policy.reads() && d.policy.edits() && !d.policy.creates());
-    assert!(d.on_steps());
-    assert_eq!(d.max_steps, 6);
-    // the groups say the number too
-    assert!(
-        d.summary(moon_agent::Category::Editor)
-            .ends_with("· 6 steps"),
-        "{}",
-        d.summary(moon_agent::Category::Editor)
-    );
-    app.update(key(KeyCode::Esc), &tx);
-    assert!(matches!(&app.panel, Some(Panel::Tools(d)) if d.level == Level::Groups));
-    app.update(key(KeyCode::Esc), &tx);
-    assert!(app.panel.is_none());
+    cell_on(&mut app, EDIT_FILES);
+    app.update(key(KeyCode::Enter), &tx);
+    steps_on(&mut app);
+    app.update(key(KeyCode::Char('5')), &tx);
+    assert_eq!(app.steps_of(DEFAULT_AGENT), 5);
+    app.update(key(KeyCode::Enter), &tx);
+    assert_eq!(app.steps_of(DEFAULT_AGENT), 6);
     assert!(app.tools_on);
     let h = app.harness.as_ref().unwrap();
     assert!(!h.agent().has(moon_agent::Tool::WriteFile));
     assert_eq!(h.limits().rounds, 6);
-    let answer = last_answer(&app);
-    assert!(
-        answer.contains("ask: edit existing files") && !answer.contains("create"),
-        "{answer}"
-    );
-    // reopened it shows what is set; `Files` off as a whole and esc turns
-    // it off
+    app.update(key(KeyCode::Esc), &tx);
+    app.update(key(KeyCode::Esc), &tx);
+    assert!(app.panel.is_none());
+    // reopened it shows what is set; the editor rule off is tools off
     type_text(&mut app, &tx, "/tools");
     app.update(key(KeyCode::Enter), &tx);
-    assert!(
-        matches!(&app.panel, Some(Panel::Tools(d)) if d.policy.reads() && d.policy.edits() && !d.policy.creates() && d.max_steps == 6)
-    );
+    assert!(yours(&app).reads() && yours(&app).edits() && !yours(&app).creates());
+    assert_eq!(app.steps_of(DEFAULT_AGENT), 6);
+    groups_on(&mut app, moon_agent::Category::Editor);
     app.update(key(KeyCode::Left), &tx);
-    app.update(key(KeyCode::Esc), &tx);
     assert!(!app.tools_on);
     assert!(app.harness.is_none());
 }
@@ -306,14 +334,12 @@ async fn read_only_is_the_reader_and_says_so() {
     // `read files` alone: the writing rows stay off
     type_text(&mut app, &tx, "/tools");
     app.update(key(KeyCode::Enter), &tx);
+    cell_on(&mut app, moon_core::config::ids::READ_FILES);
     app.update(key(KeyCode::Enter), &tx);
-    app.update(key(KeyCode::Char(' ')), &tx);
-    let Some(Panel::Tools(d)) = &app.panel else {
-        panic!("expected the tools panel")
-    };
-    assert!(d.policy.reads() && !d.policy.edits() && !d.policy.creates());
+    assert!(yours(&app).reads() && !yours(&app).edits() && !yours(&app).creates());
     app.update(key(KeyCode::Esc), &tx);
     app.update(key(KeyCode::Esc), &tx);
+    assert!(app.panel.is_none());
     assert!(app.tools_on);
     assert_eq!(app.tools_scope(), (false, false));
     assert!(!app.tools_write());
@@ -321,28 +347,23 @@ async fn read_only_is_the_reader_and_says_so() {
     assert_eq!(h.agent().name, "reader");
     assert_eq!(h.specs().len(), 2);
     // the marker, the notice and the prompt all say it only reads
-    assert_eq!(app.edit_mode_span().unwrap().content, "⏵⏵ Read");
-    let answer = last_answer(&app);
-    assert!(
-        answer.contains("allow: read files") && !answer.contains("ask:"),
-        "{answer}"
-    );
+    assert_eq!(app.edit_mode_span().unwrap().content, "⏵⏵ default · Read");
     let prompt = app.system_prompt_for(&[]).unwrap();
     assert!(prompt.contains("cannot change files") && !prompt.contains("edit_file"));
-    // and the panel, reopened, shows the writing rows off; `edit` back on
+    // and the table, reopened, shows the writing rows off; `edit` back on
     // gives the editor without write_file
     type_text(&mut app, &tx, "/tools");
     app.update(key(KeyCode::Enter), &tx);
-    assert!(
-        matches!(&app.panel, Some(Panel::Tools(d)) if d.policy.reads() && !d.policy.edits() && !d.policy.creates())
-    );
+    assert!(yours(&app).reads() && !yours(&app).edits() && !yours(&app).creates());
+    cell_on(&mut app, moon_core::config::ids::EDIT_FILES);
     app.update(key(KeyCode::Enter), &tx);
-    app.update(key(KeyCode::Down), &tx);
-    app.update(key(KeyCode::Char(' ')), &tx);
     app.update(key(KeyCode::Esc), &tx);
     app.update(key(KeyCode::Esc), &tx);
     assert_eq!(app.tools_scope(), (true, false));
-    assert_eq!(app.edit_mode_span().unwrap().content, "⏵⏵ Read · Edit");
+    assert_eq!(
+        app.edit_mode_span().unwrap().content,
+        "⏵⏵ default · Read · Edit"
+    );
     assert_eq!(app.harness.as_ref().unwrap().agent().name, "editor");
 }
 
@@ -364,7 +385,7 @@ fn the_configuration_turns_it_on_at_startup() {
             cwd: "~/p".into(),
             root: root.to_path_buf(),
             state_dir: None,
-            tools_file: None,
+            agents_dir: None,
         })
     };
     let mut tools = moon_core::ToolsConfig {
@@ -385,13 +406,16 @@ fn the_configuration_turns_it_on_at_startup() {
     assert_eq!(app.tools_scope(), (false, false));
     assert!(!app.tools_write());
     assert_eq!(app.harness.as_ref().unwrap().agent().name, "reader");
-    assert_eq!(app.edit_mode_span().unwrap().content, "⏵⏵ Read");
+    assert_eq!(app.edit_mode_span().unwrap().content, "⏵⏵ default · Read");
 
     // and one box alone
     tools.edit = true;
     let app = at_startup(tools, dir.path());
     assert_eq!(app.tools_scope(), (true, false));
-    assert_eq!(app.edit_mode_span().unwrap().content, "⏵⏵ Read · Edit");
+    assert_eq!(
+        app.edit_mode_span().unwrap().content,
+        "⏵⏵ default · Read · Edit"
+    );
 }
 
 #[tokio::test]
@@ -533,14 +557,18 @@ async fn an_edit_waits_for_the_ok_and_is_applied() {
     let Some(Panel::Approval(a)) = &app.panel else {
         panic!("expected the approval panel")
     };
-    assert_eq!(a.title(), "Edit a.rs");
+    assert_eq!(a.title(), "Edit file");
+    assert_eq!(a.subject(), "a.rs");
     assert_eq!(a.info(), "+1 −1");
-    assert_eq!(a.verb(), "Apply");
-    assert_eq!(a.choice, EditChoice::Apply);
+    assert_eq!(
+        a.question(),
+        ("Do you want to make this edit to ", "a.rs", "?")
+    );
+    assert_eq!(a.choice, EditChoice::Yes);
     // the cursor walks the two choices; enter takes the one it is on
-    app.update(key(KeyCode::Right), &tx);
-    assert!(matches!(&app.panel, Some(Panel::Approval(a)) if a.choice == EditChoice::Skip));
-    app.update(key(KeyCode::Left), &tx);
+    app.update(key(KeyCode::Down), &tx);
+    assert!(matches!(&app.panel, Some(Panel::Approval(a)) if a.choice == EditChoice::No));
+    app.update(key(KeyCode::Up), &tx);
     app.update(key(KeyCode::Enter), &tx);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("a.rs")).unwrap(),
@@ -582,7 +610,7 @@ async fn skip_leaves_the_file_and_tells_the_model() {
     app.update(key(KeyCode::Enter), &tx);
     settle(&mut app, &tx, &mut rx).await;
     assert!(app.waiting_approval());
-    app.update(key(KeyCode::Char('s')), &tx);
+    app.update(key(KeyCode::Char('n')), &tx);
     settle(&mut app, &tx, &mut rx).await;
     assert_eq!(
         std::fs::read_to_string(dir.path().join("a.rs")).unwrap(),
@@ -730,4 +758,323 @@ async fn a_failed_step_says_why_on_the_same_line() {
             .any(|l| l == "  ⎿  ✗ edit  a.rs · `a.rs` was not read"),
         "{shown:?}"
     );
+}
+
+#[tokio::test]
+async fn an_agent_runs_on_its_own_permissions_and_the_session_remembers_it() {
+    use moon_core::config::ids::{EDIT_FILES, READ_FILES};
+    use moon_core::Permission;
+    let dir = project();
+    let agents = agents_dir();
+    std::fs::write(
+        agents.path().join("committer.toml"),
+        "description = \"stages and commits what you approve\"\n\
+         inherit     = false\n\
+         max_steps   = 6\n\
+         prompt      = \"You prepare commits.\"\n\n\
+         [permissions]\n\
+         \"read files\" = \"allow\"\n\
+         \"git diff\"   = \"allow\"\n\
+         \"git add\"    = \"ask\"\n\
+         \"git commit\" = \"ask\"\n",
+    )
+    .unwrap();
+    let (mut app, tx, _rx) = app();
+    app.root = dir.path().to_path_buf();
+    app.agents_dir = Some(agents.path().to_path_buf());
+    // default's permissions: reading, editing, and two git commands
+    app.set_policy(Policy::from_pairs([
+        (READ_FILES, Permission::Allow),
+        (EDIT_FILES, Permission::Allow),
+        ("git diff", Permission::Allow),
+        ("git commit", Permission::Ask),
+    ]));
+    assert!(app.tools_on);
+    assert_eq!(app.harness.as_ref().unwrap().agent().name, "editor");
+    assert_eq!(
+        text(&[app.edit_mode_span().unwrap()]),
+        "⏵⏵ default · Read · Edit · 2 commands"
+    );
+
+    // `/agent` is a picker like `/model`: one row per file of the
+    // folder, default first and the rest by name
+    type_text(&mut app, &tx, "/agent");
+    app.update(key(KeyCode::Enter), &tx);
+    let Some(Panel::Agents(p)) = &app.panel else {
+        panic!("expected the agent picker")
+    };
+    let names: Vec<String> = p
+        .rows()
+        .iter()
+        .filter_map(|r| match r {
+            crate::picker::Row::Item(it, _, _) => Some(it.label.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, vec!["default", "committer", "reviewer"]);
+    assert!(p.current().unwrap().active, "default is the one on");
+    // choose the reviewer: the loop runs on ITS permissions, whole —
+    // choosing an agent is choosing its policy
+    app.update(key(KeyCode::Down), &tx);
+    app.update(key(KeyCode::Down), &tx);
+    app.update(key(KeyCode::Enter), &tx);
+    assert!(app.panel.is_none());
+    assert_eq!(app.agent, "reviewer");
+    assert!(
+        last_answer(&app).contains("set agent to reviewer"),
+        "{}",
+        last_answer(&app)
+    );
+    let a = app.harness.as_ref().unwrap().agent().clone();
+    assert_eq!(a.name, "reviewer");
+    assert!(a.has(moon_agent::Tool::ReadFile) && !a.has(moon_agent::Tool::EditFile));
+    assert_eq!(
+        a.command_ids(),
+        vec!["git status", "git diff", "git log", "git show", "git blame"]
+    );
+    assert!(app.system_prompt_for(&[]).unwrap().contains("# Reviewing"));
+    // the marker says the agent's own; default's file stays as it was
+    assert_eq!(
+        text(&[app.edit_mode_span().unwrap()]),
+        "⏵⏵ reviewer · Read · 5 commands"
+    );
+    assert!(yours(&app).edits());
+    let saved = moon_agent::AgentFile::load(&agents.path().join("default.toml")).unwrap();
+    assert_eq!(saved.policy(), yours(&app));
+
+    // the agent from the file carries its own step limit: default keeps
+    // 8, 6 is what the harness gets, and its commands are its own — git
+    // add runs (asking) although default never named it
+    app.select_agent("committer");
+    let h = app.harness.as_ref().unwrap();
+    assert_eq!(h.agent().prompt, "You prepare commits.");
+    assert_eq!(h.limits().rounds, 6);
+    assert_eq!(app.steps_of(DEFAULT_AGENT), 8);
+    assert_eq!(
+        h.agent().command_ids(),
+        vec!["git diff", "git add", "git commit"]
+    );
+
+    // a resumed session carries the name; one that is gone falls back
+    let meta: SessionMeta = serde_json::from_str(
+        r#"{"id":"x","title":"t","created_at":"2026-01-01T00:00:00Z","tools":true,"agent":"ghost"}"#,
+    )
+    .unwrap();
+    app.apply_session(Session {
+        meta,
+        messages: Vec::new(),
+    });
+    assert_eq!(app.agent, DEFAULT_AGENT);
+    let notice = app
+        .notice
+        .as_ref()
+        .map(|(n, _)| n.clone())
+        .unwrap_or_default();
+    assert!(notice.contains("back to default"), "{notice}");
+    assert_eq!(app.harness.as_ref().unwrap().agent().name, "editor");
+}
+
+#[tokio::test]
+async fn agents_are_made_edited_and_deleted_from_the_picker() {
+    let ctrl = |c| Action::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+    let dir = project();
+    let agents = agents_dir();
+    std::fs::write(
+        agents.path().join("trusty.toml"),
+        "description = \"x\"\ninherit = true\nprompt = \"y\"\n",
+    )
+    .unwrap();
+    let (mut app, tx, _rx) = app();
+    app.root = dir.path().to_path_buf();
+    app.agents_dir = Some(agents.path().to_path_buf());
+
+    // ctrl+a asks for a name; the template is written and its table
+    // opens, ready to edit
+    type_text(&mut app, &tx, "/agent");
+    app.update(key(KeyCode::Enter), &tx);
+    assert!(matches!(app.panel, Some(Panel::Agents(_))));
+    app.update(ctrl('a'), &tx);
+    assert!(matches!(
+        app.panel,
+        Some(Panel::AgentAction {
+            action: AgentAction::New { .. },
+            ..
+        })
+    ));
+    // a bad name is said and the input stays
+    type_text(&mut app, &tx, "Bad Name");
+    app.update(key(KeyCode::Enter), &tx);
+    let notice = |app: &App| app.notice.clone().map(|(n, _)| n).unwrap_or_default();
+    assert!(notice(&app).contains("lowercase"), "{}", notice(&app));
+    for _ in 0.."Bad Name".len() {
+        app.update(key(KeyCode::Backspace), &tx);
+    }
+    type_text(&mut app, &tx, "tester");
+    app.update(key(KeyCode::Enter), &tx);
+    let path = agents.path().join("tester.toml");
+    assert!(path.exists());
+    {
+        let Some(Panel::Perms(p)) = &app.panel else {
+            panic!("expected the permissions table")
+        };
+        assert_eq!((p.name.as_str(), p.from_picker), ("tester", true));
+    }
+
+    // enter on `git status` lists it in the agent's file at what the
+    // catalogue says, written at once
+    cell_on(&mut app, "git status");
+    app.update(key(KeyCode::Enter), &tx);
+    let saved = moon_agent::AgentFile::load(&path).unwrap();
+    assert_eq!(
+        saved.permissions.get("git status"),
+        Some(&moon_core::Permission::Allow),
+        "{saved:?}"
+    );
+    // what the table does not edit is kept from the template
+    assert_eq!(
+        saved.description,
+        moon_agent::AgentFile::template().description
+    );
+    assert_eq!(saved.max_steps, Some(8), "the template's own limit");
+    // enter again turns it off, in the file: it lists everything there
+    // is, so the line stays, set to off
+    app.update(key(KeyCode::Enter), &tx);
+    let saved = moon_agent::AgentFile::load(&path).unwrap();
+    assert_eq!(
+        saved.permissions.get("git status"),
+        Some(&moon_core::Permission::Off),
+        "{saved:?}"
+    );
+    // esc steps out to the groups, and back to the picker it came from
+    app.update(key(KeyCode::Esc), &tx);
+    app.update(key(KeyCode::Esc), &tx);
+    assert!(matches!(app.panel, Some(Panel::Agents(_))));
+
+    // default's table edits default.toml, a file like any other — while
+    // renaming default is refused, since every conversation starts there
+    app.update(ctrl('t'), &tx);
+    {
+        let Some(Panel::Perms(p)) = &app.panel else {
+            panic!("expected the permissions table")
+        };
+        assert_eq!(p.name, "default");
+    }
+    let default_file = agents.path().join("default.toml");
+    cell_on(&mut app, "git status");
+    app.update(key(KeyCode::Enter), &tx);
+    assert_eq!(yours(&app).get("git status"), moon_core::Permission::Allow);
+    assert_eq!(
+        moon_agent::AgentFile::load(&default_file)
+            .unwrap()
+            .policy()
+            .get("git status"),
+        moon_core::Permission::Allow
+    );
+    app.update(key(KeyCode::Enter), &tx);
+    assert_eq!(yours(&app).get("git status"), moon_core::Permission::Off);
+    app.update(key(KeyCode::Esc), &tx);
+    app.update(key(KeyCode::Esc), &tx);
+    app.update(ctrl('r'), &tx);
+    assert!(
+        notice(&app).contains("cannot be renamed"),
+        "{}",
+        notice(&app)
+    );
+
+    // an old file with `inherit` still loads — the line is ignored, its
+    // `[permissions]` are the whole truth — and edits like any other
+    app.update(key(KeyCode::Down), &tx);
+    app.update(key(KeyCode::Down), &tx);
+    app.update(key(KeyCode::Down), &tx);
+    app.update(ctrl('t'), &tx);
+    {
+        let Some(Panel::Perms(p)) = &app.panel else {
+            panic!("expected the permissions table")
+        };
+        assert_eq!(p.name, "trusty");
+    }
+    cell_on(&mut app, "git status");
+    app.update(key(KeyCode::Enter), &tx);
+    let trusty = agents.path().join("trusty.toml");
+    let f = moon_agent::AgentFile::load(&trusty).unwrap();
+    assert_eq!(
+        f.permissions.get("git status"),
+        Some(&moon_core::Permission::Allow),
+        "{f:?}"
+    );
+    app.update(key(KeyCode::Enter), &tx);
+    let f = moon_agent::AgentFile::load(&trusty).unwrap();
+    assert!(f.policy().is_empty(), "{f:?}");
+    app.update(key(KeyCode::Esc), &tx);
+    app.update(key(KeyCode::Esc), &tx);
+
+    // ctrl+r renames the file — the name is the file — and a selection
+    // that named it follows
+    app.select_agent("tester");
+    assert_eq!(app.agent, "tester");
+    app.update(key(KeyCode::Down), &tx);
+    app.update(key(KeyCode::Down), &tx);
+    app.update(ctrl('r'), &tx);
+    match &app.panel {
+        Some(Panel::AgentAction {
+            action: AgentAction::Rename { name, input },
+            ..
+        }) => assert_eq!((name.as_str(), input.as_str()), ("tester", "tester")),
+        other => panic!("expected the rename dialog, got {:?}", other.is_some()),
+    }
+    for _ in 0.."tester".len() {
+        app.update(key(KeyCode::Backspace), &tx);
+    }
+    type_text(&mut app, &tx, "probe");
+    app.update(key(KeyCode::Enter), &tx);
+    assert!(!path.exists());
+    let renamed = agents.path().join("probe.toml");
+    assert!(renamed.exists());
+    assert_eq!(app.agent, "probe");
+    assert!(matches!(app.panel, Some(Panel::Agents(_))));
+
+    // deleting the selected agent falls back to default; the fresh picker
+    // opens with the cursor on the active one, probe
+    app.update(ctrl('d'), &tx);
+    assert!(matches!(
+        app.panel,
+        Some(Panel::AgentAction {
+            action: AgentAction::Delete { .. },
+            ..
+        })
+    ));
+    app.update(key(KeyCode::Enter), &tx);
+    assert!(!renamed.exists());
+    assert_eq!(app.agent, DEFAULT_AGENT);
+    // said while the panel was down: it lands in the command's echo
+    let echoed = app
+        .echo
+        .as_ref()
+        .map(|(_, o)| o.join(" · "))
+        .unwrap_or_default();
+    assert!(echoed.contains("back to default"), "{echoed}");
+    assert!(matches!(app.panel, Some(Panel::Agents(_))));
+}
+
+#[tokio::test]
+async fn slash_tools_is_an_alias_of_the_table() {
+    let dir = project();
+    let agents = tempfile::tempdir().unwrap();
+    std::fs::write(
+        agents.path().join("committer.toml"),
+        "description = \"x\"\ninherit = false\nprompt = \"y\"\n\n[permissions]\n\"read files\" = \"allow\"\n",
+    )
+    .unwrap();
+    let (mut app, tx, _rx) = app();
+    app.root = dir.path().to_path_buf();
+    app.agents_dir = Some(agents.path().to_path_buf());
+    let _ = app.reload_agents();
+    app.select_agent("committer");
+    // `/tools` opens the table over the chosen agent
+    type_text(&mut app, &tx, "/tools");
+    app.update(key(KeyCode::Enter), &tx);
+    let Some(Panel::Perms(p)) = &app.panel else {
+        panic!("expected the permissions table")
+    };
+    assert_eq!((p.name.as_str(), p.from_picker), ("committer", false));
 }

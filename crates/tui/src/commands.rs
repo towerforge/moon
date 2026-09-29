@@ -75,7 +75,12 @@ pub const SPECS: &[Spec] = &[
     Spec {
         name: "tools",
         args: "",
-        help: "what the model may do: one row per capability, files and commands alike, each off, ask or allow, and how many rounds a turn gets",
+        help: "an alias: opens the permissions of the agent in use (they live in /agent)",
+    },
+    Spec {
+        name: "agent",
+        args: "",
+        help: "who talks to the model, and with which permissions: enter picks an agent, ctrl+t opens its permissions, ctrl+e its prompt, ctrl+a/r/d create, rename and delete; one file each in agents/, default.toml included",
     },
     Spec {
         name: "context",
@@ -129,12 +134,16 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     ("ctrl+s", "sessions panel: resume a saved conversation"),
     (
-        "↑↓ · enter · s · esc",
-        "in the approval panel: choose apply (or run) or skip · confirm · skip · cancel the turn; pgup/pgdn scroll the diff",
+        "1 · 2 · ↑↓ · enter · esc",
+        "in the approval panel: yes · no · choose · confirm · cancel the turn; pgup/pgdn scroll the diff",
+    ),
+    (
+        "ctrl+a · ctrl+t · ctrl+e · ctrl+r · ctrl+d",
+        "in the agent picker: new agent · its permissions · its description and prompt · rename it · delete it (default stays)",
     ),
     (
         "↑↓ · enter · ←→ · esc",
-        "in the tools panel: move · open a group, or on and off inside one · a whole group off or on, or off · ask · allow inside one, or the number · save: back out of a group, or close from the groups",
+        "on the permissions panel: move · a group open, or a row on and off · a whole group off or on, or off · ask · allow on a row; every step saved · back",
     ),
     ("↑ · ↓", "prompt history (on the first / last line)"),
     ("pgup · pgdn · ctrl+↑ · ctrl+↓", "scroll the conversation"),
@@ -169,8 +178,10 @@ pub enum Command {
     Retry,
     Undo,
     Files,
-    /// The model editing files: the panel that turns it on and tunes it.
+    /// An alias kept for a while: the permissions of the agent in use.
     Tools,
+    /// Who talks to the model: the picker of agent definitions.
+    Agent,
     Context,
     /// The machine drawn: cpu and ram over the window `sysmon` keeps.
     Machine,
@@ -210,6 +221,7 @@ pub fn parse(input: &str) -> Result<Command, String> {
         "files" | "attach" | "add" | "drop" => Command::Files,
         // like `/model`, whatever follows is not a setting: the panel is
         "tools" | "edit" | "edits" => Command::Tools,
+        "agent" | "agents" => Command::Agent,
         "context" | "ctx" => Command::Context,
         "machine" => Command::Machine,
         "help" | "?" => Command::Help,
@@ -268,6 +280,10 @@ mod tests {
         assert_eq!(parse("/tools"), Ok(Command::Tools));
         assert_eq!(parse("/tools on"), Ok(Command::Tools));
         assert_eq!(complete("to"), vec!["tools"]);
+        // like `/model`: the picker, whatever follows
+        assert_eq!(parse("/agent"), Ok(Command::Agent));
+        assert_eq!(parse("/agents reviewer"), Ok(Command::Agent));
+        assert_eq!(complete("ag"), vec!["agent"]);
         // `/add` and `/drop` are gone as commands, but they still open the panel
         assert_eq!(parse("/add"), Ok(Command::Files));
         assert_eq!(parse("/drop"), Ok(Command::Files));

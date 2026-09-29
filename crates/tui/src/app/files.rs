@@ -443,14 +443,16 @@ impl App {
                     .collect::<Vec<_>>()
                     .join(", "),
                 self.cwd,
-                if self.tools_write() {
-                    "every edit needs your ok"
-                } else {
-                    "read-only"
+                match (self.tools_write(), self.policy().writes_unseen()) {
+                    (false, _) => "read-only",
+                    (true, false) => "every edit needs your ok",
+                    (true, true) => "writes land without asking",
                 }
             ),
-            _ => "tools: off · /tools turns them on".into(),
+            _ => "tools: off · /agent turns them on".into(),
         });
+        let def = self.agent_def();
+        lines.push(format!("agent: {} · {}", def.name, def.description));
         if self.tools_on {
             let policy = self.policy();
             for p in [moon_core::Permission::Allow, moon_core::Permission::Ask] {

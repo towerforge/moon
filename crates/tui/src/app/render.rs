@@ -319,10 +319,23 @@ impl App {
             )
         } else {
             format!(
-                "read from {}; edit it directly, or `moon config init --force` to reset it",
+                "read from {}; edit it directly, or `moon config reset` to start over",
                 self.cfg_path.display()
             )
         }
+    }
+
+    /// For the `Agents` row of `/help`: the folder, one file per agent, and
+    /// the two commands that write it.
+    pub fn agents_note(&self) -> String {
+        let at = match &self.agents_dir {
+            Some(d) => format!(" in {}", d.display()),
+            None => String::new(),
+        };
+        format!(
+            "one file per agent{at}, default.toml included; `moon config init` writes default and \
+             reviewer, `moon config reset` writes them again as they ship"
+        )
     }
 
     /// Visible lines of the conversation for a given area. Updates the scroll

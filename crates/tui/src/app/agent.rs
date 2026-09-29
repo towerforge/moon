@@ -1,328 +1,27 @@
-//! The model acting on the project, on screen: the `/tools` panel, the
-//! loop's commands turned into conversation items and panels, the keys of
-//! the approval panel, and the command that runs off the main thread. The
-//! loop itself lives in `moon-agent`; this is where its commands meet the
-//! interface.
+//! The model acting on the project, on screen: the agents and the one the
+//! conversation runs through, the loop's commands turned into conversation
+//! items and panels, the keys of the approval panel, and the command that
+//! runs off the main thread. The loop itself lives in `moon-agent`; this is
+//! where its commands meet the interface.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
 use moon_agent::{
-    editor_with, run_command, Agent, Category, Command, Entry, Event, Exec, Harness, Limits,
-    Pending, PendingEdit, Policy, Sandbox, Stop, Verdict, CATALOG,
+    editor_with, file_name, run_command, AgentFile, Command, Event, Exec, Harness, Limits, Pending,
+    PendingEdit, Policy, Sandbox, Stop, Verdict,
 };
-use moon_core::config::ids::{CREATE_FILES, EDIT_FILES, READ_FILES};
-use moon_core::{Permission, ToolsFile};
+use moon_core::write_text;
 
-/// Where the `/tools` panel stands: on the groups, or inside one of them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Level {
-    /// The categories, one row each with what is on in them.
-    Groups,
-    /// Inside one category: its entries, one row each with its permission;
-    /// in `Editor`, the step limit as the last row.
-    Group(Category),
-}
+/// Replies with tool calls one message may take before the turn stops.
+pub const ROUNDS_MAX: usize = 20;
 
-/// The `/tools` panel: two levels walked with the cursor. On the first, the
-/// groups of the catalogue, each with a summary of what is on and a way to
-/// turn the whole of it off or on; on the second, inside one group, its
-/// entries with their permission as a selector. There is no cancel: `Esc`
-/// steps back out of a group, and applies whatever is set from the groups.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ToolsDialog {
-    pub policy: Policy,
-    /// One per catalogue entry: the program is on this machine. What is
-    /// not there stays off.
-    pub found: Vec<bool>,
-    /// Replies with tool calls one message may take before the turn stops.
-    pub max_steps: usize,
-    /// The tools were on when the panel opened: closing with nothing on
-    /// is worth a word then.
-    pub was_on: bool,
-    pub level: Level,
-    /// Row the cursor is on at the level it is at: a group; inside a
-    /// group, one of its entries, or in `Editor` one past them for the
-    /// step limit.
-    pub row: usize,
-    /// First body line shown, and the rows and lines of the last paint, to
-    /// keep the cursor in view.
-    pub scroll: usize,
-    pub rows: usize,
-    pub total: usize,
-}
-
-impl ToolsDialog {
-    pub const ROUNDS_MAX: usize = 20;
-    /// The group the step limit lives in, as its last row.
-    pub const STEPS_GROUP: Category = Category::Editor;
-
-    pub fn new(policy: Policy, max_steps: usize, found: Vec<bool>) -> Self {
-        Self {
-            was_on: !policy.is_empty(),
-            policy,
-            found,
-            max_steps,
-            level: Level::Groups,
-            row: 0,
-            scroll: 0,
-            rows: 0,
-            total: 0,
-        }
-    }
-
-    /// Whether each entry of the catalogue is on this machine.
-    pub fn probe() -> Vec<bool> {
-        CATALOG.iter().map(|e| e.resolve().is_some()).collect()
-    }
-
-    /// The row of the step limit inside `Editor`: after its entries.
-    pub fn steps_row(&self) -> usize {
-        Self::members(Self::STEPS_GROUP).len()
-    }
-
-    /// The cursor on the step limit, inside `Editor`.
-    pub fn go_to_steps(&mut self) {
-        self.level = Level::Group(Self::STEPS_GROUP);
-        self.row = self.steps_row();
-        self.scroll = 0;
-    }
-
-    /// Inside `Editor`, on its last row.
-    pub fn on_steps(&self) -> bool {
-        self.level == Level::Group(Self::STEPS_GROUP) && self.row == self.steps_row()
-    }
-
-    /// The entries of a category, as indices into the catalogue.
-    pub fn members(cat: Category) -> Vec<usize> {
-        CATALOG
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.category == cat)
-            .map(|(i, _)| i)
-            .collect()
-    }
-
-    /// The category the cursor is on or in.
-    pub fn category(&self) -> Option<Category> {
-        match self.level {
-            Level::Groups => Category::ALL.get(self.row).copied(),
-            Level::Group(c) => Some(c),
-        }
-    }
-
-    /// Inside a group, the index into the catalogue of the entry under the
-    /// cursor; none on the step limit.
-    pub fn index(&self) -> Option<usize> {
-        match self.level {
-            Level::Groups => None,
-            Level::Group(c) => Self::members(c).get(self.row).copied(),
-        }
-    }
-
-    /// Inside a group, the entry under the cursor.
-    pub fn entry(&self) -> Option<&'static Entry> {
-        self.index().and_then(|i| CATALOG.get(i))
-    }
-
-    pub fn found_at(&self, i: usize) -> bool {
-        self.found.get(i).copied().unwrap_or(true)
-    }
-
-    /// Into the group of the entry with this id, the cursor on it.
-    pub fn go_to(&mut self, id: &str) {
-        let Some(e) = moon_agent::catalog::find(id) else {
-            return;
-        };
-        let Some(i) = CATALOG.iter().position(|x| x.id == e.id) else {
-            return;
-        };
-        let cat = CATALOG[i].category;
-        self.level = Level::Group(cat);
-        self.row = Self::members(cat).iter().position(|m| *m == i).unwrap_or(0);
-        self.scroll = 0;
-    }
-
-    /// Rows at the level the cursor is at.
-    fn len(&self) -> usize {
-        match self.level {
-            Level::Groups => Category::ALL.len(),
-            Level::Group(c) if c == Self::STEPS_GROUP => Self::members(c).len() + 1,
-            Level::Group(c) => Self::members(c).len(),
-        }
-    }
-
-    pub fn up(&mut self) {
-        let n = self.len().max(1);
-        self.row = (self.row + n - 1) % n;
-    }
-
-    pub fn down(&mut self) {
-        self.row = (self.row + 1) % self.len().max(1);
-    }
-
-    /// `enter`: on a group, into it; inside one, the entry on and off.
-    pub fn enter(&mut self) {
-        match self.level {
-            Level::Groups => {
-                if let Some(cat) = self.category() {
-                    self.level = Level::Group(cat);
-                    self.row = 0;
-                    self.scroll = 0;
-                }
-            }
-            Level::Group(_) => self.toggle(),
-        }
-    }
-
-    /// `esc` inside a group: back to the groups, the cursor on the one
-    /// left. From the groups there is nowhere back to: `false`.
-    pub fn back(&mut self) -> bool {
-        match self.level {
-            Level::Groups => false,
-            Level::Group(c) => {
-                self.level = Level::Groups;
-                self.row = Category::ALL.iter().position(|x| *x == c).unwrap_or(0);
-                self.scroll = 0;
-                true
-            }
-        }
-    }
-
-    /// `space`: on and off. Inside a group, the entry: on is what the
-    /// catalogue turns it to, `allow` for what only looks, `ask` for what
-    /// changes things, and a program that is not installed stays off; the
-    /// step limit has no off. On a group, the whole of it: off if anything
-    /// is on, its defaults otherwise.
-    pub fn toggle(&mut self) {
-        match self.level {
-            Level::Groups => {
-                let Some(cat) = self.category() else {
-                    return;
-                };
-                if self.group_on(cat) {
-                    self.group_off(cat);
-                } else {
-                    self.group_defaults(cat);
-                }
-            }
-            Level::Group(_) => {
-                let Some(i) = self.index() else {
-                    return;
-                };
-                let e = &CATALOG[i];
-                if self.policy.allows(e.id) {
-                    self.policy.set(e.id, Permission::Off);
-                } else if self.found_at(i) {
-                    self.policy.set(e.id, e.on);
-                }
-            }
-        }
-    }
-
-    /// `←`/`→`: inside a group, one step along `off · ask · allow` (`off ·
-    /// allow` for where commands run, which has nothing to ask), or the
-    /// number on the step limit; on a group, the whole of it off or to its
-    /// defaults.
-    pub fn change(&mut self, delta: i32) {
-        match self.level {
-            Level::Groups => match self.category() {
-                Some(cat) if delta < 0 => self.group_off(cat),
-                Some(cat) => self.group_defaults(cat),
-                None => {}
-            },
-            Level::Group(_) if self.on_steps() => {
-                self.max_steps = (self.max_steps as i64 + delta as i64)
-                    .clamp(1, Self::ROUNDS_MAX as i64) as usize;
-            }
-            Level::Group(_) => {
-                let Some(i) = self.index() else {
-                    return;
-                };
-                if !self.found_at(i) {
-                    return;
-                }
-                let e = &CATALOG[i];
-                let order: &[Permission] = if e.kind == moon_agent::Kind::Subfolders {
-                    &[Permission::Off, Permission::Allow]
-                } else {
-                    &[Permission::Off, Permission::Ask, Permission::Allow]
-                };
-                let at = order
-                    .iter()
-                    .position(|p| *p == self.policy.get(e.id))
-                    .unwrap_or(0) as i64;
-                let next = (at + delta as i64).clamp(0, order.len() as i64 - 1) as usize;
-                self.policy.set(e.id, order[next]);
-            }
-        }
-    }
-
-    /// Anything on in the group.
-    pub fn group_on(&self, cat: Category) -> bool {
-        Self::members(cat)
-            .into_iter()
-            .any(|i| self.policy.allows(CATALOG[i].id))
-    }
-
-    fn group_off(&mut self, cat: Category) {
-        for i in Self::members(cat) {
-            self.policy.set(CATALOG[i].id, Permission::Off);
-        }
-    }
-
-    /// Every entry of the group to what the catalogue turns it to, the ones
-    /// that are not installed left off.
-    fn group_defaults(&mut self, cat: Category) {
-        for i in Self::members(cat) {
-            if self.found_at(i) {
-                self.policy.set(CATALOG[i].id, CATALOG[i].on);
-            }
-        }
-    }
-
-    /// What a group has on, for its row: `allow: git status, git diff ·
-    /// ask: git commit`, or `off`; `Editor` says its step limit too.
-    pub fn summary(&self, cat: Category) -> String {
-        let names = |p: Permission| {
-            Self::members(cat)
-                .into_iter()
-                .map(|i| CATALOG[i].id)
-                .filter(|id| self.policy.get(id) == p)
-                .collect::<Vec<_>>()
-        };
-        let mut parts = Vec::new();
-        for p in [Permission::Allow, Permission::Ask] {
-            let n = names(p);
-            if !n.is_empty() {
-                parts.push(format!("{}: {}", p.as_str(), n.join(", ")));
-            }
-        }
-        if parts.is_empty() {
-            parts.push("off".to_string());
-        }
-        if cat == Self::STEPS_GROUP {
-            parts.push(format!("{} steps", self.max_steps));
-        }
-        parts.join(" · ")
-    }
-
-    /// Left by the paint: `rows` shown of `total`, and the scroll moved so
-    /// the line the cursor is on stays in view.
-    pub fn show(&mut self, cursor_line: usize, total: usize, rows: usize) {
-        self.rows = rows;
-        self.total = total;
-        if rows == 0 {
-            self.scroll = 0;
-            return;
-        }
-        if cursor_line < self.scroll {
-            self.scroll = cursor_line;
-        } else if cursor_line >= self.scroll + rows {
-            self.scroll = cursor_line + 1 - rows;
-        }
-        self.scroll = self.scroll.min(total.saturating_sub(rows));
-    }
+/// The three things `ctrl+a`, `ctrl+r` and `ctrl+d` start on an agent.
+#[derive(Clone, Copy)]
+enum AgentActionKind {
+    New,
+    Rename,
+    Delete,
 }
 
 /// What is on screen waiting for the user, an edit or a command, and the
@@ -337,24 +36,15 @@ pub struct Approval {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditChoice {
-    Apply,
-    Skip,
-}
-
-impl EditChoice {
-    fn toggle(self) -> Self {
-        match self {
-            EditChoice::Apply => EditChoice::Skip,
-            EditChoice::Skip => EditChoice::Apply,
-        }
-    }
+    Yes,
+    No,
 }
 
 impl Approval {
     pub fn new(pending: Pending) -> Self {
         Self {
             pending,
-            choice: EditChoice::Apply,
+            choice: EditChoice::Yes,
             scroll: 0,
             rows: 0,
         }
@@ -387,14 +77,20 @@ impl Approval {
         self.scroll = (self.scroll as i64 + delta as i64).clamp(0, max) as usize;
     }
 
-    /// Title of the panel: what would happen to which file, or what would run.
-    pub fn title(&self) -> String {
+    /// Title of the panel: the kind of action, what it acts on goes under it.
+    pub fn title(&self) -> &'static str {
         match &self.pending {
-            Pending::Edit(e) => {
-                let verb = if e.expect.is_none() { "Create" } else { "Edit" };
-                format!("{verb} {}", e.path)
-            }
-            Pending::Run(e) => format!("Run {}", e.id),
+            Pending::Edit(e) if e.expect.is_none() => "Create file",
+            Pending::Edit(_) => "Edit file",
+            Pending::Run(_) => "Run command",
+        }
+    }
+
+    /// Under the title: the file, or the command of the catalogue.
+    pub fn subject(&self) -> &str {
+        match &self.pending {
+            Pending::Edit(e) => &e.path,
+            Pending::Run(e) => e.id,
         }
     }
 
@@ -408,12 +104,19 @@ impl Approval {
         }
     }
 
-    /// The word on the confirming chip and in the hints: `Apply` an edit,
-    /// `Run` a command.
-    pub fn verb(&self) -> &'static str {
+    /// The question over the choices, split around what it is about, which
+    /// goes in bold: the file name, or the command.
+    pub fn question(&self) -> (&'static str, &str, &'static str) {
         match &self.pending {
-            Pending::Edit(_) => "Apply",
-            Pending::Run(_) => "Run",
+            Pending::Edit(e) => {
+                let name = e.path.rsplit('/').next().unwrap_or(&e.path);
+                if e.expect.is_none() {
+                    ("Do you want to create ", name, "?")
+                } else {
+                    ("Do you want to make this edit to ", name, "?")
+                }
+            }
+            Pending::Run(e) => ("Do you want to run ", e.id, "?"),
         }
     }
 }
@@ -427,7 +130,8 @@ pub(crate) struct Running {
 }
 
 impl App {
-    /// What the model may do right now; nothing while the tools are off.
+    /// What the model may do right now — the chosen agent's permissions;
+    /// nothing while the tools are off.
     pub(crate) fn policy(&self) -> Policy {
         match &self.harness {
             Some(h) => h.agent().policy.clone(),
@@ -435,13 +139,417 @@ impl App {
         }
     }
 
-    /// What the model may do to files: `(edit, create)`, from the agent
-    /// behind the switch; both while it is off, which is what turning it on
-    /// gives.
+    /// What the agent may do to files: `(edit, create)`, for the session's
+    /// meta line; both while the tools are off, as the older sessions had.
     pub(crate) fn tools_scope(&self) -> (bool, bool) {
-        match &self.harness {
-            Some(h) => (h.agent().policy.edits(), h.agent().policy.creates()),
-            None => (true, true),
+        match self.tools_on {
+            true => (self.policy().edits(), self.policy().creates()),
+            false => (true, true),
+        }
+    }
+
+    /// The agents folder read again: `default.toml` made if it is not
+    /// there, every file brought up to the catalogue, then one definition
+    /// per file. What happened comes back, one line each — a file written,
+    /// one rewritten, one that could not be taken. Without a folder the
+    /// definitions in memory stay as they are.
+    pub(crate) fn reload_agents(&mut self) -> Vec<String> {
+        let Some(dir) = self.agents_dir.clone() else {
+            return Vec::new();
+        };
+        let mut said = Vec::new();
+        match moon_agent::ensure_default(&dir, &self.cfg.tools) {
+            Ok(Some(from)) => said.push(format!(
+                "agents/{} written {from}",
+                file_name(DEFAULT_AGENT)
+            )),
+            Ok(None) => {}
+            Err(e) => said.push(format!(
+                "agents/{} could not be written: {e}",
+                file_name(DEFAULT_AGENT)
+            )),
+        }
+        said.extend(moon_agent::sync_dir(&dir));
+        let (mut defs, errors) = moon_agent::defs_from_dir(&dir);
+        said.extend(errors.into_iter().map(|e| format!("agent skipped · {e}")));
+        // the loop never runs on a ghost: default is there even when its
+        // file is not, with nothing on
+        if !defs.iter().any(|d| d.name == DEFAULT_AGENT) {
+            defs.insert(0, AgentDef::default_agent());
+        }
+        self.agents = defs;
+        said
+    }
+
+    /// The folder read again before something uses it — a message, the
+    /// panel — so an edit made by hand counts: the chosen agent rebuilt if
+    /// its file changed, and said; a chosen agent whose file is gone falls
+    /// back to `default`.
+    pub(crate) fn sync_agents(&mut self) {
+        let before = self.agent_def();
+        for line in self.reload_agents() {
+            self.notify(line);
+        }
+        if !self.agents.iter().any(|d| d.name == self.agent) {
+            let gone = std::mem::replace(&mut self.agent, DEFAULT_AGENT.into());
+            self.refresh_agent_state();
+            self.update_session_meta();
+            self.notify(format!("agent {gone} is gone · back to default"));
+            return;
+        }
+        if self.agent_def() != before {
+            self.refresh_agent_state();
+            self.update_session_meta();
+            self.notify(format!(
+                "agents/{} changed · reloaded",
+                file_name(&self.agent)
+            ));
+        }
+    }
+
+    /// One definition by name, as last read.
+    pub(crate) fn def_of(&self, name: &str) -> Option<AgentDef> {
+        self.agents.iter().find(|d| d.name == name).cloned()
+    }
+
+    /// A definition changed made the file and the state: written where the
+    /// agent lives, when there is a folder; put among the definitions; and
+    /// the switch and the loop refreshed if it is the chosen one. Going dark
+    /// is worth a word.
+    pub(crate) fn save_def(&mut self, def: AgentDef) {
+        if let Some(path) = self.agent_path(&def.name) {
+            if let Err(e) = write_text(&path, &AgentFile::from_def(&def).to_toml()) {
+                self.notify(format!("could not save {}: {e}", def.name));
+                return;
+            }
+        }
+        match self.agents.iter_mut().find(|d| d.name == def.name) {
+            Some(d) => *d = def,
+            None => self.agents.push(def),
+        }
+        let was_on = self.tools_on;
+        self.refresh_agent_state();
+        self.update_session_meta();
+        if was_on && !self.tools_on {
+            self.notify("tools off · the model only reads what you attach");
+        }
+    }
+
+    /// The definition of the chosen agent; a name no definition carries any
+    /// more gives `default`, so the loop never runs on a ghost.
+    pub(crate) fn agent_def(&self) -> AgentDef {
+        self.agents
+            .iter()
+            .find(|d| d.name == self.agent)
+            .cloned()
+            .unwrap_or_else(AgentDef::default_agent)
+    }
+
+    /// The harness given what the chosen agent calls for: its prompt, its
+    /// permissions and its step limit.
+    pub(super) fn rebuild_agent(&mut self) {
+        let def = self.agent_def();
+        let Some(h) = self.harness.as_mut() else {
+            return;
+        };
+        h.set_agent(def.agent());
+        let mut limits = h.limits();
+        limits.rounds = def.steps().clamp(1, ROUNDS_MAX);
+        h.set_limits(limits);
+    }
+
+    /// `/agent`: the picker, the folder read again first so a new file
+    /// shows up without a restart.
+    pub(crate) fn open_agent_picker(&mut self) {
+        let said = self.reload_agents();
+        if !said.is_empty() {
+            self.notify(said.join(" · "));
+        }
+        let items = self
+            .agents
+            .iter()
+            .map(|d| PickerItem {
+                id: d.name.clone(),
+                key: format!("{} {}", d.name, d.description),
+                label: d.name.clone(),
+                detail: d.description.clone(),
+                active: d.name == self.agent,
+                dim: false,
+                group: None,
+            })
+            .collect();
+        let n = self.agents.len();
+        let mut p = Picker::new("Agent", items, "");
+        p.hint = "a prompt and its permissions, whole: choosing the agent is choosing them".into();
+        p.title_info = format!("{n} {}", models::plural(n, "agent"));
+        p.keys = vec![
+            ("↑↓", "move"),
+            ("enter", "select"),
+            ("ctrl+a", "new"),
+            ("ctrl+t", "permissions"),
+            ("ctrl+e", "prompt"),
+            ("ctrl+r", "rename"),
+            ("ctrl+d", "delete"),
+            ("esc", "close"),
+        ];
+        p.empty_text = "no agent matches".into();
+        self.panel = Some(Panel::Agents(p));
+    }
+
+    /// The choice made the state: the loop gets the agent, and the session
+    /// remembers the name.
+    pub(super) fn select_agent(&mut self, name: &str) {
+        self.agent = name.to_string();
+        self.refresh_agent_state();
+        self.update_session_meta();
+        let mut line = format!("set agent to {name}");
+        if !self.tools_on {
+            line.push_str(" · all off · ctrl+t opens its permissions");
+        }
+        self.notify(line);
+    }
+
+    /// The file behind an agent; none without a folder.
+    pub(super) fn agent_path(&self, name: &str) -> Option<PathBuf> {
+        self.agents_dir.as_ref().map(|d| d.join(file_name(name)))
+    }
+
+    /// `ctrl+a`, `ctrl+r` and `ctrl+d` in the agent picker: the panel
+    /// switches to naming a new agent, renaming one or confirming a
+    /// delete, keeping the list to return to it.
+    pub(super) fn open_agent_new(&mut self) {
+        self.open_agent_action(AgentActionKind::New);
+    }
+
+    pub(super) fn open_agent_rename(&mut self) {
+        self.open_agent_action(AgentActionKind::Rename);
+    }
+
+    pub(super) fn open_agent_delete(&mut self) {
+        self.open_agent_action(AgentActionKind::Delete);
+    }
+
+    fn open_agent_action(&mut self, kind: AgentActionKind) {
+        if !matches!(self.panel, Some(Panel::Agents(_))) {
+            return;
+        }
+        if self.agents_dir.is_none() {
+            self.notify("no agents folder to write to");
+            return;
+        }
+        let Some(Panel::Agents(picker)) = self.panel.take() else {
+            return;
+        };
+        let action = match kind {
+            AgentActionKind::New => AgentAction::New {
+                input: String::new(),
+            },
+            _ => {
+                let Some(name) = picker.current().map(|it| it.id.clone()) else {
+                    self.panel = Some(Panel::Agents(picker));
+                    return;
+                };
+                if name == DEFAULT_AGENT {
+                    let verb = match kind {
+                        AgentActionKind::Delete => "deleted",
+                        _ => "renamed",
+                    };
+                    self.panel = Some(Panel::Agents(picker));
+                    self.notify(format!(
+                        "default is the agent every conversation starts with: it cannot be {verb}"
+                    ));
+                    return;
+                }
+                match kind {
+                    AgentActionKind::Delete => AgentAction::Delete {
+                        name,
+                        choice: Choice::Delete,
+                    },
+                    _ => AgentAction::Rename {
+                        input: name.clone(),
+                        name,
+                    },
+                }
+            }
+        };
+        self.panel = Some(Panel::AgentAction {
+            picker: Box::new(picker),
+            action,
+        });
+    }
+
+    pub(super) fn handle_agent_action_key(&mut self, key: KeyEvent) {
+        enum Next {
+            Stay,
+            Back,
+            Create(String),
+            RenameTo(String, String),
+            Remove(String),
+        }
+        let Some(Panel::AgentAction { picker, mut action }) = self.panel.take() else {
+            return;
+        };
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let next = match &mut action {
+            AgentAction::New { input } => match key.code {
+                KeyCode::Esc => Next::Back,
+                KeyCode::Char('c') if ctrl => Next::Back,
+                KeyCode::Enter => Next::Create(input.trim().to_string()),
+                KeyCode::Backspace => {
+                    input.pop();
+                    Next::Stay
+                }
+                KeyCode::Char(ch) if !ctrl => {
+                    input.push(ch);
+                    Next::Stay
+                }
+                _ => Next::Stay,
+            },
+            AgentAction::Rename { name, input } => match key.code {
+                KeyCode::Esc => Next::Back,
+                KeyCode::Char('c') if ctrl => Next::Back,
+                KeyCode::Enter => Next::RenameTo(name.clone(), input.trim().to_string()),
+                KeyCode::Backspace => {
+                    input.pop();
+                    Next::Stay
+                }
+                KeyCode::Char(ch) if !ctrl => {
+                    input.push(ch);
+                    Next::Stay
+                }
+                _ => Next::Stay,
+            },
+            AgentAction::Delete { name, choice } => match key.code {
+                KeyCode::Esc | KeyCode::Char('n') => Next::Back,
+                KeyCode::Char('c') if ctrl => Next::Back,
+                KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Tab
+                | KeyCode::BackTab
+                | KeyCode::Char('h')
+                | KeyCode::Char('j')
+                | KeyCode::Char('k')
+                | KeyCode::Char('l') => {
+                    *choice = choice.toggle();
+                    Next::Stay
+                }
+                KeyCode::Enter => match choice {
+                    Choice::Delete => Next::Remove(name.clone()),
+                    Choice::Keep => Next::Back,
+                },
+                KeyCode::Char('y') | KeyCode::Char('d') => Next::Remove(name.clone()),
+                _ => Next::Stay,
+            },
+        };
+        match next {
+            Next::Stay => self.panel = Some(Panel::AgentAction { picker, action }),
+            Next::Back => self.panel = Some(Panel::Agents(*picker)),
+            Next::Create(name) => match self.create_agent(&name) {
+                Ok(()) => {
+                    self.open_perms(&name, true);
+                    self.notify(format!("agent {name} created"));
+                }
+                Err(e) => {
+                    // the dialog stays: the word must be a notice, so the
+                    // panel goes back before it is said
+                    self.panel = Some(Panel::AgentAction { picker, action });
+                    self.notify(e);
+                }
+            },
+            Next::RenameTo(old, new) => {
+                if old == new {
+                    self.panel = Some(Panel::Agents(*picker));
+                    return;
+                }
+                match self.rename_agent(&old, &new) {
+                    Ok(()) => self.open_agent_picker(),
+                    Err(e) => {
+                        // the dialog stays here too
+                        self.panel = Some(Panel::AgentAction { picker, action });
+                        self.notify(e);
+                    }
+                }
+            }
+            Next::Remove(name) => {
+                self.delete_agent(&name);
+                self.open_agent_picker();
+            }
+        }
+    }
+
+    /// What a name may be: it is the file's, so lowercase and simple, and
+    /// not one that is taken.
+    fn check_agent_name(&self, name: &str) -> Result<(), String> {
+        if name.is_empty() {
+            return Err("type a name for the agent".into());
+        }
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        {
+            return Err("a name is lowercase letters, digits, - and _".into());
+        }
+        if self.agents.iter().any(|d| d.name == name) {
+            return Err(format!("`{name}` already exists"));
+        }
+        Ok(())
+    }
+
+    /// The name typed after `ctrl+a`: the template written — the folder
+    /// made if it was not there — and the new agent left open to edit.
+    fn create_agent(&mut self, name: &str) -> Result<(), String> {
+        self.check_agent_name(name)?;
+        let Some(path) = self.agent_path(name) else {
+            return Err("no agents folder to write to".into());
+        };
+        write_text(&path, &AgentFile::template().to_toml()).map_err(|e| e.to_string())?;
+        let _ = self.reload_agents();
+        Ok(())
+    }
+
+    /// `ctrl+r`: the file is the name, so renaming the agent renames it; a
+    /// selection that named it follows.
+    fn rename_agent(&mut self, old: &str, new: &str) -> Result<(), String> {
+        if old == DEFAULT_AGENT {
+            return Err("default cannot be renamed".into());
+        }
+        self.check_agent_name(new)?;
+        let (Some(from), Some(to)) = (self.agent_path(old), self.agent_path(new)) else {
+            return Err("no agents folder to write to".into());
+        };
+        std::fs::rename(&from, &to).map_err(|e| format!("could not rename {old}: {e}"))?;
+        let _ = self.reload_agents();
+        if self.agent == old {
+            self.agent = new.to_string();
+            self.rebuild_agent();
+            self.update_session_meta();
+        }
+        self.notify(format!("agent {old} renamed to {new}"));
+        Ok(())
+    }
+
+    /// The file goes; a selection that named it falls back to `default`.
+    fn delete_agent(&mut self, name: &str) {
+        if name == DEFAULT_AGENT {
+            return;
+        }
+        let Some(path) = self.agent_path(name) else {
+            return;
+        };
+        if let Err(e) = std::fs::remove_file(&path) {
+            self.notify(format!("could not delete {name}: {e}"));
+            return;
+        }
+        let _ = self.reload_agents();
+        if self.agent == name {
+            self.agent = DEFAULT_AGENT.into();
+            self.rebuild_agent();
+            self.update_session_meta();
+            self.notify(format!("agent {name} deleted · back to default"));
+        } else {
+            self.notify(format!("agent {name} deleted"));
         }
     }
 
@@ -455,39 +563,34 @@ impl App {
 
     /// The model can write something, so an approval may come.
     pub(crate) fn tools_write(&self) -> bool {
-        let (edit, create) = self.tools_scope();
-        self.tools_on && (edit || create)
+        let p = self.policy();
+        self.tools_on && (p.edits() || p.creates())
     }
 
-    /// The policy made the state: nothing on is tools off; anything on
-    /// turns them on and swaps the agent behind the switch.
+    /// The chosen agent's permissions set whole, file and state: nothing
+    /// on is tools off; anything on turns them on.
     pub(crate) fn set_policy(&mut self, policy: Policy) {
-        if policy.is_empty() {
+        let mut def = self.agent_def();
+        def.policy = policy;
+        self.save_def(def);
+    }
+
+    /// The switch follows the chosen agent's permissions: empty is tools
+    /// off, anything on turns them on.
+    pub(crate) fn refresh_agent_state(&mut self) {
+        if self.agent_def().policy.is_empty() {
             if self.tools_on {
                 self.disable_tools();
             }
             return;
         }
         if !self.tools_on {
-            if let Err(e) = self.enable_tools() {
+            if let Err(e) = self.enable_harness() {
                 self.notify(e);
                 return;
             }
         }
-        if let Some(h) = self.harness.as_mut() {
-            h.set_agent(Agent::for_policy(policy));
-        }
-    }
-
-    /// The two writing boxes, on the policy as it is: what a session's
-    /// meta line says.
-    pub(crate) fn set_tools_scope(&mut self, edit: bool, create: bool) {
-        let mut p = self.policy();
-        p.set(READ_FILES, Permission::Allow);
-        let ask = |on: bool| if on { Permission::Ask } else { Permission::Off };
-        p.set(EDIT_FILES, ask(edit));
-        p.set(CREATE_FILES, ask(create));
-        self.set_policy(p);
+        self.rebuild_agent();
     }
 
     /// An edit or a command is on screen and the loop is paused on it.
@@ -507,10 +610,31 @@ impl App {
         self.is_streaming() || self.harness.as_ref().is_some_and(Harness::in_turn)
     }
 
-    /// On, from the panel or the configuration: the sandbox on the start-up
-    /// directory and, behind it, the agent the configuration's permissions
-    /// call for. Refuses only what cannot work at all.
+    /// On, from the tests or a configuration without an agents folder: the
+    /// chosen agent given what the old `[tools]` keys ask for when it has
+    /// nothing on — the editor's whole policy when they ask for nothing —
+    /// then the harness.
     pub(crate) fn enable_tools(&mut self) -> Result<(), String> {
+        if self.tools_on {
+            return Ok(());
+        }
+        if self.agent_def().policy.is_empty() {
+            let mut policy = Policy::from_pairs(self.cfg.tools.startup_permissions());
+            if policy.is_empty() {
+                policy = editor_with(self.cfg.tools.edit, self.cfg.tools.create).policy;
+            }
+            self.set_policy(policy);
+            return match self.tools_on {
+                true => Ok(()),
+                false => Err("the tools could not be turned on".into()),
+            };
+        }
+        self.enable_harness()
+    }
+
+    /// The sandbox on the start-up directory and, behind it, the chosen
+    /// agent as its file says.
+    pub(super) fn enable_harness(&mut self) -> Result<(), String> {
         if self.tools_on {
             return Ok(());
         }
@@ -520,16 +644,10 @@ impl App {
             &self.cfg.tools.deny,
         )
         .map_err(|e| format!("cannot enable edits: {} · {e}", self.cwd))?;
-        // the permissions the configuration asks for; from the panel, the
-        // file and on a resume they are set again right after
-        let policy = Policy::from_pairs(self.cfg.tools.startup_permissions());
-        let agent = if policy.is_empty() {
-            editor_with(self.cfg.tools.edit, self.cfg.tools.create)
-        } else {
-            Agent::for_policy(policy)
-        };
+        let agent = self.agent_def().agent();
         self.harness = Some(Harness::new(agent, sandbox, Limits::default()));
         self.tools_on = true;
+        self.rebuild_agent();
         if let Some(c) = &self.current {
             if self.current_is_ollama() && self.caps.is_some_and(|caps| !caps.tools) {
                 self.notify(format!(
@@ -540,8 +658,8 @@ impl App {
         }
         if !self.root.join(".git").exists() {
             let warn = "✎ edits on · not a git repository: moon cannot undo what you apply";
-            // from `/tools`, under the command, even while its panel is still
-            // open; from the configuration, on its own
+            // from the panel, under the command, even while it is still
+            // open; from the file at startup, on its own
             if let Some((_, out)) = self.echo.as_mut() {
                 out.push(warn.into());
             } else {
@@ -551,199 +669,6 @@ impl App {
         }
         self.update_session_meta();
         Ok(())
-    }
-
-    /// The panel's file read again and, if it changed since the last time,
-    /// made the state: the permissions and the limit. `Ok(true)` when
-    /// there is a file and it was applied now.
-    pub(crate) fn sync_tools_file(&mut self) -> Result<bool, String> {
-        let Some(path) = self.tools_file.clone() else {
-            return Ok(false);
-        };
-        let f = ToolsFile::load(&path).map_err(|e| e.to_string())?;
-        let Some(f) = f else {
-            return Ok(false);
-        };
-        if self.tools_seen.as_ref() == Some(&f) {
-            return Ok(false);
-        }
-        self.apply_tools_file(&f);
-        self.tools_seen = Some(f);
-        Ok(true)
-    }
-
-    /// `sync_tools_file` where a change is worth a word: before a message
-    /// and when the panel opens.
-    pub(crate) fn reload_tools_file(&mut self) {
-        match self.sync_tools_file() {
-            Ok(true) => self.notify(format!("{} changed · reloaded", ToolsFile::FILE)),
-            Ok(false) => {}
-            Err(e) => self.notify(e),
-        }
-    }
-
-    fn apply_tools_file(&mut self, f: &ToolsFile) {
-        self.set_policy(Policy::from_pairs(f.permissions.clone()));
-        self.set_max_steps(f.max_steps);
-        self.update_session_meta();
-    }
-
-    fn set_max_steps(&mut self, n: usize) {
-        if let Some(h) = self.harness.as_mut() {
-            let mut limits = h.limits();
-            limits.rounds = n.clamp(1, ToolsDialog::ROUNDS_MAX);
-            h.set_limits(limits);
-        }
-    }
-
-    fn max_steps(&self) -> usize {
-        self.harness
-            .as_ref()
-            .map_or(Limits::default().rounds, |h| h.limits().rounds)
-    }
-
-    /// The state, as the file would say it.
-    fn tools_file_state(&self) -> ToolsFile {
-        ToolsFile {
-            max_steps: self.max_steps(),
-            permissions: self.policy().pairs(),
-        }
-    }
-
-    /// The state written to the panel's file, so it is there next time.
-    fn save_tools_file(&mut self) {
-        let Some(path) = self.tools_file.clone() else {
-            return;
-        };
-        // the whole catalogue, off included, so the file shows what there is
-        let f = self.tools_file_state();
-        let text = moon_agent::catalog::render_tools_file(&self.policy(), f.max_steps);
-        match ToolsFile::write_text(&path, &text) {
-            Ok(()) => self.tools_seen = Some(f),
-            Err(e) => self.notify(format!("could not save {}: {e}", ToolsFile::FILE)),
-        }
-    }
-
-    /// `/tools`: the panel, filled with how things are now, the file read
-    /// first in case it was edited by hand.
-    pub(crate) fn open_tools_dialog(&mut self) {
-        self.reload_tools_file();
-        self.panel = Some(Panel::Tools(ToolsDialog::new(
-            self.policy(),
-            self.max_steps(),
-            ToolsDialog::probe(),
-        )));
-    }
-
-    /// The panel's choices made the state and written to the file: on the
-    /// way out of a group, quietly; on closing, with a word on what is on,
-    /// or that it went off.
-    fn apply_tools_dialog(&mut self, d: &ToolsDialog, announce: bool) {
-        self.set_policy(d.policy.clone());
-        if self.tools_on {
-            self.set_max_steps(d.max_steps);
-            self.update_session_meta();
-        }
-        self.save_tools_file();
-        if !announce {
-            return;
-        }
-        if !self.tools_on {
-            if d.was_on {
-                self.notify("tools off · the model only reads what you attach");
-            }
-            return;
-        }
-        let names = |p: Permission| {
-            d.policy
-                .entries()
-                .into_iter()
-                .filter(|(_, x)| *x == p)
-                .map(|(e, _)| e.id)
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let (allow, ask) = (names(Permission::Allow), names(Permission::Ask));
-        let mut line = String::from("⏵⏵ tools on");
-        if !allow.is_empty() {
-            line.push_str(&format!(" · allow: {allow}"));
-        }
-        if !ask.is_empty() {
-            line.push_str(&format!(" · ask: {ask}"));
-        }
-        self.notify(line);
-        // writes let through without the diff: git is the only way back
-        let unwatched = [EDIT_FILES, CREATE_FILES]
-            .iter()
-            .any(|id| d.policy.get(id) == Permission::Allow);
-        if unwatched && !self.root.join(".git").exists() {
-            self.notify(
-                "✎ edits allowed without asking · not a git repository: nothing can undo them",
-            );
-        }
-    }
-
-    pub(super) fn handle_tools_key(&mut self, key: KeyEvent) {
-        enum Next {
-            Stay,
-            /// Out of a group: what is set applies, and the panel stays.
-            Save,
-            /// Closed: what is set applies, and is said.
-            Close,
-        }
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let Some(Panel::Tools(d)) = self.panel.as_mut() else {
-            return;
-        };
-        let next = match key.code {
-            // no cancel: esc always saves, on its way out of a group or
-            // closing the panel from the groups
-            KeyCode::Esc | KeyCode::Backspace => {
-                if d.back() {
-                    Next::Save
-                } else {
-                    Next::Close
-                }
-            }
-            KeyCode::Char('c') if ctrl => Next::Close,
-            KeyCode::Enter => {
-                d.enter();
-                Next::Stay
-            }
-            KeyCode::Char(' ') => {
-                d.toggle();
-                Next::Stay
-            }
-            KeyCode::Up | KeyCode::BackTab | KeyCode::Char('k') => {
-                d.up();
-                Next::Stay
-            }
-            KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => {
-                d.down();
-                Next::Stay
-            }
-            KeyCode::Left | KeyCode::Char('h') => {
-                d.change(-1);
-                Next::Stay
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                d.change(1);
-                Next::Stay
-            }
-            _ => Next::Stay,
-        };
-        match next {
-            Next::Stay => {}
-            Next::Save => {
-                let d = d.clone();
-                self.apply_tools_dialog(&d, false);
-            }
-            Next::Close => {
-                if let Some(Panel::Tools(d)) = self.panel.take() {
-                    self.apply_tools_dialog(&d, true);
-                }
-            }
-        }
     }
 
     /// Off, from the panel: whatever is in flight is cancelled first.
@@ -925,25 +850,19 @@ impl App {
             KeyCode::Esc => Next::Cancel,
             KeyCode::Char('c') if ctrl => Next::Cancel,
             KeyCode::Enter => Next::Verdict(match a.choice {
-                EditChoice::Apply => Verdict::Apply,
-                EditChoice::Skip => Verdict::Skip,
+                EditChoice::Yes => Verdict::Apply,
+                EditChoice::No => Verdict::Skip,
             }),
-            KeyCode::Char('a') | KeyCode::Char('y') | KeyCode::Char('r') => {
-                Next::Verdict(Verdict::Apply)
+            // the numbers of the list, or its first letters, answer at once
+            KeyCode::Char('1') | KeyCode::Char('y') => Next::Verdict(Verdict::Apply),
+            KeyCode::Char('2') | KeyCode::Char('n') => Next::Verdict(Verdict::Skip),
+            // one option over the other
+            KeyCode::Up | KeyCode::Char('k') => {
+                a.choice = EditChoice::Yes;
+                Next::Stay
             }
-            KeyCode::Char('s') | KeyCode::Char('n') => Next::Verdict(Verdict::Skip),
-            // two options side by side: any direction walks them
-            KeyCode::Up
-            | KeyCode::Down
-            | KeyCode::Left
-            | KeyCode::Right
-            | KeyCode::Tab
-            | KeyCode::BackTab
-            | KeyCode::Char('h')
-            | KeyCode::Char('j')
-            | KeyCode::Char('k')
-            | KeyCode::Char('l') => {
-                a.choice = a.choice.toggle();
+            KeyCode::Down | KeyCode::Char('j') => {
+                a.choice = EditChoice::No;
                 Next::Stay
             }
             KeyCode::PageUp => {

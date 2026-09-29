@@ -17,7 +17,7 @@ pub(super) fn app() -> (App, Tx, mpsc::UnboundedReceiver<Action>) {
         cwd: "~/x".into(),
         root: std::env::temp_dir(),
         state_dir: None,
-        tools_file: None,
+        agents_dir: None,
     });
     (app, tx, rx)
 }
@@ -92,12 +92,22 @@ fn config_note_says_where_the_file_is() {
         cwd: "~/x".into(),
         root: std::env::temp_dir(),
         state_dir: None,
-        tools_file: None,
+        agents_dir: None,
     });
     assert_eq!(
         loaded.config_note(),
-        "read from /x/config.toml; edit it directly, or `moon config init --force` to reset it"
+        "read from /x/config.toml; edit it directly, or `moon config reset` to start over"
     );
+    // the agents row names the folder when there is one, and the two
+    // commands that write it either way
+    assert!(loaded
+        .agents_note()
+        .starts_with("one file per agent, default.toml"));
+    let mut with_dir = loaded;
+    with_dir.agents_dir = Some(PathBuf::from("/x/agents"));
+    let note = with_dir.agents_note();
+    assert!(note.contains("in /x/agents"), "{note}");
+    assert!(note.contains("`moon config reset`"), "{note}");
 }
 
 #[tokio::test]

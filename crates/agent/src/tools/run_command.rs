@@ -1,4 +1,4 @@
-//! `run_command`: one of the commands that are on in `/tools`, and only
+//! `run_command`: one of the commands the agent's file turns on, and only
 //! those. `prepare` turns the call into an `Exec`, checked: the command is
 //! on, the arguments stay inside the project and off the deny list, the
 //! folder is one of the project's. `execute` runs it, with no shell, a time
@@ -131,12 +131,19 @@ pub fn prepare(sandbox: &Sandbox, policy: &Policy, arguments: &Value) -> Result<
         // the paths the file tools refuse are refused here too, by name
         sandbox.deny_check(arg)?;
     }
+    if !entry.needs.is_empty() && !rest.iter().any(|a| entry.needs.contains(&a.as_str())) {
+        return Err(usage(format!(
+            "{} needs `{}`",
+            entry.id,
+            entry.needs.join("` or `")
+        )));
+    }
     let (dir, rel_dir) = match a.dir.as_deref().map(str::trim) {
         Some(d) if !d.is_empty() && d != "." => {
             if !policy.subfolders() {
                 return Err(usage(
                     "commands run from the project root here; `commands in subfolders` is off \
-                     in /tools"
+                     in /agent"
                         .into(),
                 ));
             }
@@ -421,6 +428,24 @@ mod tests {
         let err = prep(json!({"command": "cat .env"})).unwrap_err();
         assert!(err.to_string().contains("looks like a secret"), "{err}");
         assert!(matches!(err, ToolError::Denied(_)));
+        // `up` only detached, `logs` never following, whether docker is
+        // here or not
+        let compose = policy(&[
+            ("docker compose up", Permission::Ask),
+            ("docker compose logs", Permission::Allow),
+        ]);
+        let err = prepare(&sb, &compose, &json!({"command": "docker compose up api"})).unwrap_err();
+        assert!(
+            err.to_string().contains("needs `-d` or `--detach`"),
+            "{err}"
+        );
+        let err = prepare(
+            &sb,
+            &compose,
+            &json!({"command": "docker compose logs -f api"}),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("`-f` is not allowed"), "{err}");
         // a folder needs `commands in subfolders` on, and must exist inside
         let err = prep(json!({"command": "ls", "dir": "src"})).unwrap_err();
         assert!(err.to_string().contains("subfolders` is off"), "{err}");

@@ -24,13 +24,16 @@ use crate::mentions;
 use crate::picker::{Picker, PickerGroup, PickerItem};
 use crate::theme::Theme;
 use crate::wrap::{pad_line, wrap_line};
+use moon_agent::{AgentDef, DEFAULT_AGENT};
 use moon_core::context::{self, Attachment, Spec};
 
 mod agent;
+mod agent_prompt;
 mod chat;
 mod files;
 mod keys;
 mod models;
+mod perms;
 mod render;
 mod slash;
 mod status;
@@ -39,11 +42,15 @@ mod tests;
 #[cfg(test)]
 mod tests_agent;
 #[cfg(test)]
+mod tests_agent_prompt;
+#[cfg(test)]
 mod tests_commands;
 #[cfg(test)]
 mod tests_context;
 
-pub use agent::{Approval, EditChoice, Level, ToolsDialog};
+pub use agent::{Approval, EditChoice, ROUNDS_MAX};
+pub use agent_prompt::{PromptEdit, PromptField};
+pub use perms::{group_rows, group_sections, PermRow, PermsLevel, PermsView};
 
 pub type Tx = mpsc::UnboundedSender<Action>;
 
@@ -164,6 +171,9 @@ pub struct RunSummary {
 pub enum Panel {
     Models(Picker),
     Sessions(Picker),
+    /// `/agent`: the agent definitions, built in and from the agents
+    /// folder; the chosen one shapes the loop over what you grant.
+    Agents(Picker),
     /// What is attached to every request: the files, the project context file
     /// and the two buttons that add and detach.
     Files(Picker),
@@ -177,6 +187,12 @@ pub enum Panel {
     /// cpu and ram drawn over the last three minutes. It holds no state: it
     /// reads `sys`, which the sampler keeps up to date.
     Machine,
+    /// One agent's description and prompt being edited from the picker,
+    /// saved to the agent's file.
+    AgentPrompt(Box<PromptEdit>),
+    /// The permissions table over one agent: the whole catalogue, what
+    /// the agent names, what you grant and what runs, edited in place.
+    Perms(Box<PermsView>),
     /// What is being decided about a session, in the sessions list's place;
     /// the list is kept so we can return to it as it was.
     SessionAction {
@@ -186,8 +202,12 @@ pub enum Panel {
     /// An edit the model asked for, waiting for the user: the diff and the
     /// two choices. The turn is paused underneath.
     Approval(Box<Approval>),
-    /// `/tools`: whether the model may edit files, and how far.
-    Tools(ToolsDialog),
+    /// What is being decided about an agent, in the picker's place; the
+    /// list is kept so we can return to it as it was.
+    AgentAction {
+        picker: Box<Picker>,
+        action: AgentAction,
+    },
 }
 
 impl Panel {
@@ -195,27 +215,49 @@ impl Panel {
     /// session dialogs have none.
     pub fn picker(&self) -> Option<&Picker> {
         match self {
-            Panel::Models(p) | Panel::Sessions(p) | Panel::Files(p) => Some(p),
+            Panel::Models(p) | Panel::Sessions(p) | Panel::Agents(p) | Panel::Files(p) => Some(p),
             Panel::Browse { picker, .. } => Some(picker),
-            Panel::Help(_)
+            Panel::AgentPrompt(_)
+            | Panel::Perms(_)
+            | Panel::Help(_)
             | Panel::Machine
             | Panel::SessionAction { .. }
             | Panel::Approval(_)
-            | Panel::Tools(_) => None,
+            | Panel::AgentAction { .. } => None,
         }
     }
 
     pub fn picker_mut(&mut self) -> Option<&mut Picker> {
         match self {
-            Panel::Models(p) | Panel::Sessions(p) | Panel::Files(p) => Some(p),
+            Panel::Models(p) | Panel::Sessions(p) | Panel::Agents(p) | Panel::Files(p) => Some(p),
             Panel::Browse { picker, .. } => Some(picker),
-            Panel::Help(_)
+            Panel::AgentPrompt(_)
+            | Panel::Perms(_)
+            | Panel::Help(_)
             | Panel::Machine
             | Panel::SessionAction { .. }
             | Panel::Approval(_)
-            | Panel::Tools(_) => None,
+            | Panel::AgentAction { .. } => None,
         }
     }
+}
+
+/// What is being done with an agent from the picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentAction {
+    /// `ctrl+a`: the name of the new agent, as it is being typed.
+    New {
+        input: String,
+    },
+    /// `ctrl+r`: the file's new name, as it is being typed.
+    Rename {
+        name: String,
+        input: String,
+    },
+    Delete {
+        name: String,
+        choice: Choice,
+    },
 }
 
 /// What is being done with a session from the list.
@@ -354,9 +396,10 @@ pub struct RunOptions {
     pub root: PathBuf,
     /// State kept between runs (recent models and sessions). `None` saves nothing.
     pub state_dir: Option<PathBuf>,
-    /// Where the `/tools` panel keeps what is ticked, `tools.toml` next to
-    /// the configuration. `None` keeps nothing between runs.
-    pub tools_file: Option<PathBuf>,
+    /// The agents folder next to the configuration, one TOML per agent for
+    /// the `/agent` picker, `default.toml` included. `None` keeps the
+    /// built-ins in memory and writes nothing.
+    pub agents_dir: Option<PathBuf>,
 }
 
 /// Recent models and sessions shown on top of their lists, and the files
@@ -475,8 +518,7 @@ pub struct App {
     sys_pace: crate::sysmon::Pace,
     /// Whether the provider has the active model loaded, and how much it takes.
     pub loaded: LoadedState,
-    /// The model may read and edit files under the root, each edit with
-    /// the user's ok. The `/tools` panel, or `[tools] enabled`.
+    /// The model may act on the root: the chosen agent has something on.
     pub tools_on: bool,
     /// The loop behind `tools_on`; built when it is turned on.
     pub(crate) harness: Option<moon_agent::Harness>,
@@ -484,10 +526,12 @@ pub struct App {
     /// the next one gets: a result that comes back late is told apart by it.
     pub(crate) running: Option<agent::Running>,
     run_seq: u64,
-    /// The panel's file, and what it said the last time it was read or
-    /// written: a change made by hand is noticed by the difference.
-    tools_file: Option<PathBuf>,
-    pub(crate) tools_seen: Option<moon_core::ToolsFile>,
+    /// The agent definitions the picker shows — the files of the agents
+    /// folder as last read, or the built-ins without one — and the name of
+    /// the chosen one; a name no definition carries falls back to `default`.
+    pub(crate) agents: Vec<AgentDef>,
+    pub(crate) agent: String,
+    pub(crate) agents_dir: Option<PathBuf>,
 
     md: Renderer,
     cache: Vec<Option<Rendered>>,
@@ -622,8 +666,9 @@ impl App {
             harness: None,
             running: None,
             run_seq: 0,
-            tools_file: opts.tools_file,
-            tools_seen: None,
+            agents: AgentDef::builtin(),
+            agent: DEFAULT_AGENT.to_string(),
+            agents_dir: opts.agents_dir,
             md: Renderer::new(),
             cache: Vec::new(),
             cfg: opts.config,
@@ -652,19 +697,22 @@ impl App {
             }
         }
         app.load_context_file();
-        // the panel's file, if the panel was ever closed, says how the tools
-        // start; the configuration only until then, or while the file is broken
-        let from_file = match app.sync_tools_file() {
-            Ok(applied) => applied,
-            Err(e) => {
-                app.items.push(Item::Error(e));
-                false
-            }
+        // the agents folder: default.toml made if it was not there, every
+        // file brought up to the catalogue, and what happened said once;
+        // then the tools follow what default has on
+        for line in app.reload_agents() {
+            app.items.push(Item::Info(line));
+        }
+        let started = if app.agents_dir.is_none() && app.cfg.tools.enabled {
+            // no folder to have carried the old keys into: they still count
+            app.enable_tools()
+        } else if !app.agent_def().policy.is_empty() {
+            app.enable_harness()
+        } else {
+            Ok(())
         };
-        if !from_file && app.cfg.tools.enabled {
-            if let Err(e) = app.enable_tools() {
-                app.items.push(Item::Error(e));
-            }
+        if let Err(e) = started {
+            app.items.push(Item::Error(e));
         }
         if let Some(id) = opts.resume {
             app.resume(&id);
@@ -882,7 +930,9 @@ impl App {
         match action {
             Action::Key(k) => self.handle_key(k, tx),
             Action::Paste(s) => {
-                if let Some(p) = self.panel.as_mut().and_then(Panel::picker_mut) {
+                if let Some(Panel::AgentPrompt(e)) = self.panel.as_mut() {
+                    e.paste(&s);
+                } else if let Some(p) = self.panel.as_mut().and_then(Panel::picker_mut) {
                     for c in s.chars().filter(|c| !c.is_control()) {
                         p.push(c);
                     }
@@ -920,14 +970,25 @@ impl App {
             Action::ScrollBy(d) => match self.panel.as_mut() {
                 Some(Panel::Help(h)) => h.scroll_by(d),
                 Some(Panel::Approval(a)) => a.scroll_by(d),
-                // the wheel walks the rows, as in the lists
-                Some(Panel::Tools(t)) => {
-                    if d < 0 {
-                        t.up()
-                    } else {
-                        t.down()
+                // the wheel walks the rows of the level it is at
+                Some(Panel::Perms(p)) => match p.level {
+                    PermsLevel::Groups => {
+                        let n = moon_agent::Category::ALL.len();
+                        p.row = if d < 0 {
+                            p.row.saturating_sub(1)
+                        } else {
+                            (p.row + 1).min(n - 1)
+                        };
                     }
-                }
+                    PermsLevel::Group(cat) => {
+                        let n = group_rows(cat).len();
+                        p.perm = if d < 0 {
+                            p.perm.saturating_sub(1)
+                        } else {
+                            (p.perm + 1).min(n - 1)
+                        };
+                    }
+                },
                 Some(Panel::SessionAction { .. }) => {}
                 // in the lists the wheel moves the cursor one at a time
                 Some(panel) => {

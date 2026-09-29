@@ -8,8 +8,8 @@
 //!   `editor`, and the `reader` that only looks.
 //! - `tools/`: what an agent can do. A closed enum: `read_file`, `list_dir`,
 //!   `edit_file`, `write_file` and `run_command`, which runs one of the
-//!   commands of a fixed catalogue, the ones ticked in `/tools`, with no
-//!   shell in between.
+//!   commands of a fixed catalogue, the ones the agent's file turns on,
+//!   with no shell in between.
 //! - `sandbox/`: the boundary. Every tool turns the model's string into a
 //!   path through it, and the path stays under the start-up directory.
 //!
@@ -20,10 +20,13 @@ pub mod harness;
 pub mod sandbox;
 pub mod tools;
 
-pub use agents::{editor, editor_with, reader, Agent};
+pub use agents::{
+    defs_from_dir, editor, editor_with, ensure_default, file_name, reader, reviewer, sync_dir,
+    Agent, AgentDef, AgentFile, DEFAULT_AGENT, DEFAULT_STEPS,
+};
 pub use harness::{calls_in_text, Command, Event, Harness, Limits, Outcome, Step, Stop, Verdict};
 pub use sandbox::{Denied, Eol, Sandbox};
 pub use tools::{
     catalog, run_command, Category, Diff, DiffKind, DiffLine, Entry, Exec, Kind, Output, Pending,
-    PendingEdit, Policy, Tool, CATALOG,
+    PendingEdit, Policy, Section, Tool, CATALOG,
 };

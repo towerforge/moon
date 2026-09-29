@@ -4,7 +4,7 @@
 
 From top to bottom: a header with the crescent, the version, the active model and the directory you started in; the conversation; a status line; the input box; and a row of hints.
 
-The **bottom panel** is where every list lives: models, sessions, files and the help. It unfolds under the conversation, in the input box's place, and the box comes back when it closes. Nothing floats over what you are reading and nothing paints a surface of its own:
+The **bottom panel** is where every list lives: models, sessions, files, agents and their permissions, the help, and the approvals for what the model wants to do. It unfolds under the conversation, in the input box's place, and the box comes back when it closes. Nothing floats over what you are reading and nothing paints a surface of its own:
 
 ```
  Select model                                         12 models · 2 providers
@@ -33,7 +33,7 @@ The **bottom panel** is where every list lives: models, sessions, files and the 
 
 The **status line** has two halves. On the left, what is happening now: `generating (12s · ↑ ~3.2k · ↓ 640 tokens · 38 tok/s) · esc to cancel`, then the wrap-up `✓ done (…)` or `✗ cancelled (…)` with the real token counts. On the right, `context 8%`, how much of the context window the last exchange filled (it turns `moon-soft` at 80 %, when models start to forget the beginning), and the session total: generation time and tokens sent and received. With Ollama the window counted is the one the model is loaded with — your `num_ctx`, not the one the model declares — because that is the one that truncates.
 
-The **bottom row** shows the hints for the current situation on the left and, on the right, the active model and the machine:
+The **bottom row** starts with the agent and what it may do — `⏵⏵ reviewer · Read · 5 commands`, or `⏵ default · all off` — then the hints for the current situation and, on the right, the active model and the machine:
 
 ```
 qwen2.5-coder:14b · 12.1G · cpu 34% ▲61 · ram 57% ▲75
@@ -49,6 +49,10 @@ qwen2.5-coder:14b · 12.1G · cpu 34% ▲61 · ram 57% ▲75
 `/context` prints the same in gigabytes, with the split between weights and context cache and how long until Ollama unloads the model.
 
 `/machine` opens the same readings as a drawing: the panel splits in columns, cpu then ram, and gpu as a third one on a machine with a card, each filled in braille — 2×4 dots per cell — from the curve down. Under the ram curve, in grey, the share of it that is the loaded model, so you see how much room is the model's and how much is everything else. The window is the one the sampler keeps, so the plot fills from the right as samples pile up; under it go the totals, swap and what the loaded model takes. `Esc` closes it.
+
+## Agents and permissions
+
+`/agent` lists the agents, one file each in `~/.config/moon/agents/`: `default`, which every conversation starts with, the sample `reviewer`, and your own. `Enter` picks one for the conversation; `ctrl+t` opens its permissions, `ctrl+e` its prompt, and `ctrl+a`, `ctrl+r` and `ctrl+d` create, rename and delete. With a permission at `ask`, what the model wants to do — an edit with its diff, a command line — opens under the conversation and waits for `1` (yes) or `2` (no). Everything about it is in [tools.md](tools.md).
 
 ## Files in the context
 
@@ -71,6 +75,27 @@ moon sessions list
 ```
 
 Inside the TUI, `Ctrl+S` opens the panel: `All` holds every session sorted by title, ignoring case, and from ten sessions on a `Recent` section on top holds the five you last opened or wrote to, in that order. Below ten the list is in view whole and `Recent` would only repeat it, so it is not drawn. No dates on screen, only the title and the model it ran on; `moon sessions list` still prints them with their date. `Enter` resumes, `Ctrl+R` renames, `Ctrl+D` deletes, each in the same panel. Deleting the conversation you are in is allowed: the file goes and what is on screen simply stops being saved, so the next message starts a new session. `/save name` renames the current conversation; `/export notes.md` writes it as Markdown. Set `save_sessions = false` to keep nothing.
+
+## Commands
+
+Type `/` and the matching commands are suggested; `Tab` completes. `/help` lists them with every key.
+
+| Command | |
+|---|---|
+| `/model` | pick a model (also `ctrl+p`) |
+| `/provider [id]` | provider status, or set the default provider for bare model names |
+| `/agent` | pick, create and edit agents and their permissions |
+| `/tools` | the permissions of the agent in use; kept as an alias |
+| `/files` | attached files: what they cost, detach, attach more (also `ctrl+f`) |
+| `/context` | what the model sees: context file, attachments, tools, token budget |
+| `/sessions` | resume a saved conversation (also `ctrl+s`) |
+| `/new` · `/clear` | a new conversation · clear the view and keep the conversation |
+| `/save [name]` · `/export [path.md]` | rename the conversation · write it as Markdown |
+| `/retry` · `/undo` · `/copy` | regenerate the last reply · drop the last exchange · copy the last reply |
+| `/system [text]` | show or set the system prompt |
+| `/params key=value …` | generation parameters for this session |
+| `/machine` | CPU, RAM and GPU drawn over the last three minutes |
+| `/help` · `/quit` | |
 
 ## The CLI
 
@@ -99,7 +124,7 @@ moon -m ollama/qwen2.5-coder:14b               # start with this model
 moon --config ./moon.toml                      # another configuration file
 moon models                                    # models of every provider
 moon providers                                 # provider status
-moon config init | path | show
+moon config init | reset | path | show         # reset asks; -y does not
 moon update                                    # update to the latest release
 moon update --check                            # is there a new version?
 ```

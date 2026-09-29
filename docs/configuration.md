@@ -3,7 +3,8 @@
 Everything is optional. Without a file, moon talks to Ollama at `http://localhost:11434` and uses the first model it finds. Precedence: CLI flags, then environment variables, then `config.toml`, then defaults.
 
 ```sh
-moon config init     # writes config.toml and tools.toml, commented; --force rewrites both
+moon config init     # writes what is missing: config.toml, agents/default.toml and agents/reviewer.toml
+moon config reset    # writes those three again as they ship; asks first, -y does not
 moon config path     # where they are, and the sessions and the log
 moon config show     # the configuration in effect
 ```
@@ -13,11 +14,11 @@ moon config show     # the configuration in effect
 | What | Where |
 |---|---|
 | Configuration | `~/.config/moon/config.toml` |
-| What the model may do (`/tools`) | `~/.config/moon/tools.toml` — see [tools.md](tools.md) |
+| The agents, `default` included: what the model may do | `~/.config/moon/agents/<name>.toml` — see [tools.md](tools.md#agents) |
 | Sessions | `~/.local/share/moon/sessions/` |
 | Log, recent models, recent sessions and the last update check | `~/.local/state/moon/` |
 
-The same XDG layout on macOS and Linux; `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME` are honored. On Windows the same folders hang from `%USERPROFILE%`, so the configuration is `%USERPROFILE%\.config\moon\config.toml`. `moon --config ./other.toml` uses another file, and looks for `tools.toml` next to it.
+The same XDG layout on macOS and Linux; `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME` are honored. On Windows the same folders hang from `%USERPROFILE%`, so the configuration is `%USERPROFILE%\.config\moon\config.toml`. `moon --config ./other.toml` uses another file, and looks for `agents/` next to it.
 
 ## Reference
 
@@ -43,7 +44,7 @@ base_url   = "http://localhost:11434"   # or the OLLAMA_HOST variable
 think      = false                      # ask for reasoning from models that support it
 keep_alive = "5m"                       # how long Ollama keeps the model loaded
 
-[tools]                       # what the model may do is in tools.toml; these two are limits
+[tools]                       # what the model may do is in agents/<name>.toml; these two are limits for every agent
 max_file_bytes = 200000       # bigger files are neither read nor edited
 deny           = [".github/workflows/**"]   # never touched, on top of .git/ and the secrets filter
 
@@ -54,7 +55,7 @@ ink-muted = "#a9a7b8"
 
 Every `[providers.<id>]` block takes `type` (`ollama` or `openai`), `base_url`, `enabled` (default `true`), `timeout_secs` (default `15`) and, for keyed services, `api_key_env`: the **name** of the environment variable that holds the key, never the key itself.
 
-Older files may have `enabled`, `edit` and `create` under `[tools]`, or a `[tools.permissions]` table. They still work while there is no `tools.toml`; once there is one, it wins.
+Older files may have `enabled`, `edit` and `create` under `[tools]`, or a `[tools.permissions]` table, and there may be a `tools.toml` next to the configuration. They are read once, when `agents/default.toml` is first written — it starts from them — and never again.
 
 ## Providers
 

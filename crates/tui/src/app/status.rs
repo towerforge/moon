@@ -12,14 +12,11 @@ impl App {
             t.accent(),
         );
         // the model is done for now: what it wants is on screen, waiting
-        if let Some(Panel::Approval(a)) = &self.panel {
+        if let Some(Panel::Approval(_)) = &self.panel {
             let mut v = vec![star, Span::raw(" ")];
             v.extend(self.shimmer("waiting for your approval"));
             v.push(Span::styled(
-                format!(
-                    " · enter {} · s skip · esc cancel the turn",
-                    a.verb().to_ascii_lowercase()
-                ),
+                " · 1 yes · 2 no · esc cancel the turn",
                 t.muted(),
             ));
             return Some(v);
@@ -255,13 +252,19 @@ impl App {
     /// The one permanent sign that the model can reach the project, at the
     /// left of the hints row, `moon` and bold, like the mode indicators of
     /// Claude Code: `⏵⏵ Read · Edit · Create · 4 commands`, one word per
-    /// file capability that is on and how many commands are.
+    /// file capability that is on and how many commands are — the effective
+    /// ones, and first the agent's name when one is chosen.
     pub fn edit_mode_span(&self) -> Option<Span<'static>> {
+        // everything runs through an agent, so the name is always there,
+        // `default` included; off, the marker says what /agent would run on
         if !self.tools_on {
-            return None;
+            return Some(Span::styled(
+                format!("⏵ {} · all off", self.agent),
+                self.theme.muted(),
+            ));
         }
         let policy = self.policy();
-        let mut words: Vec<String> = Vec::new();
+        let mut words: Vec<String> = vec![self.agent.clone()];
         if policy.reads() {
             words.push("Read".into());
         }
@@ -376,39 +379,61 @@ impl App {
     /// Footer shortcuts of the open panel, the only place they are listed.
     pub fn panel_keys(&self) -> Vec<(&'static str, &'static str)> {
         match &self.panel {
-            Some(Panel::Models(p)) | Some(Panel::Sessions(p)) | Some(Panel::Files(p)) => {
-                p.keys.clone()
-            }
+            Some(Panel::Models(p))
+            | Some(Panel::Sessions(p))
+            | Some(Panel::Agents(p))
+            | Some(Panel::Files(p)) => p.keys.clone(),
             Some(Panel::Browse { picker, .. }) => picker.keys.clone(),
             Some(Panel::Help(_)) => {
                 vec![("tab", "section"), ("↑↓", "scroll"), ("esc", "close")]
             }
             Some(Panel::Machine) => vec![("esc", "close")],
-            Some(Panel::Tools(d)) => match d.level {
-                Level::Groups => vec![
+            Some(Panel::AgentPrompt(e)) => vec![
+                (
+                    "tab",
+                    if e.field == PromptField::Prompt {
+                        "description"
+                    } else {
+                        "prompt"
+                    },
+                ),
+                ("enter", "newline"),
+                ("esc", "save & close"),
+                ("ctrl+c", "discard"),
+            ],
+            Some(Panel::Perms(p)) => match p.level {
+                PermsLevel::Groups => vec![
                     ("↑↓", "move"),
                     ("enter", "open"),
                     ("←→", "group off/on"),
-                    ("esc", "save"),
+                    if p.from_picker {
+                        ("esc", "back to agents")
+                    } else {
+                        ("esc", "close")
+                    },
                 ],
-                Level::Group(_) => vec![
+                PermsLevel::Group(_) => vec![
                     ("↑↓", "move"),
-                    ("enter", "on/off"),
                     ("←→", "off · ask · allow"),
-                    ("esc", "save & back"),
+                    ("enter", "on/off"),
+                    ("esc", "back to the groups"),
                 ],
             },
-            Some(Panel::Approval(a)) => vec![
-                ("↑↓", "choose"),
-                ("enter", "confirm"),
-                ("s", "skip"),
+            Some(Panel::AgentAction { action, .. }) => match action {
+                AgentAction::New { .. } => vec![("enter", "create"), ("esc", "cancel")],
+                AgentAction::Rename { .. } => vec![("enter", "rename"), ("esc", "cancel")],
+                AgentAction::Delete { .. } => {
+                    vec![("↑↓", "choose"), ("enter", "confirm"), ("esc", "keep")]
+                }
+            },
+            Some(Panel::Approval(a)) => {
+                let mut v = vec![("↑↓", "choose"), ("enter", "confirm"), ("1/2", "yes/no")];
                 if a.edit().is_some() {
-                    ("pgup/pgdn", "scroll")
-                } else {
-                    ("r", "run")
-                },
-                ("esc", "cancel turn"),
-            ],
+                    v.push(("pgup/pgdn", "scroll"));
+                }
+                v.push(("esc", "cancel turn"));
+                v
+            }
             Some(Panel::SessionAction { action, .. }) => match action {
                 SessionAction::Delete { .. } => {
                     vec![("↑↓", "choose"), ("enter", "confirm"), ("esc", "keep")]
@@ -429,9 +454,9 @@ impl App {
             }
             false if self.suggestions().is_some() => " tab or enter to complete · esc to clear",
             false if self.tools_on => {
-                " /tools files · /model switch model · ctrl+s sessions · /help"
+                " /agent agents · /model switch model · ctrl+s sessions · /help"
             }
-            false => " /model switch model · ctrl+s sessions · ctrl+j newline · /help",
+            false => " /agent agents · /model switch model · ctrl+s sessions · /help",
         }
     }
 }

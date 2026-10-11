@@ -1,5 +1,5 @@
-//! `run_command`: one of the commands the agent's file turns on, and only
-//! those. `prepare` turns the call into an `Exec`, checked: the command is
+//! `run_command`: one of the commands the agent's file turns on or, with
+//! `other programs` on, any program on `PATH` but a shell, asking. `prepare` turns the call into an `Exec`, checked: the command is
 //! on, the arguments stay inside the project and off the deny list, the
 //! folder is one of the project's. `execute` runs it, with no shell, a time
 //! limit and a cap on the output. The harness decides between the two: an
@@ -11,6 +11,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use moon_core::config::ids::OTHER_PROGRAMS;
 use moon_core::Permission;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -46,7 +47,12 @@ pub fn spec(policy: &Policy) -> (String, Value) {
         .filter(|e| policy.get(e.id) == Permission::Ask)
         .map(|e| e.id)
         .collect();
-    let mut description = if names.is_empty() {
+    let mut description = if names.is_empty() && policy.others() {
+        "Run a program of this machine, by its name on PATH, with its arguments as a list. \
+         No shell: no pipes, no redirections, no `&&`. Arguments are relative to the project \
+         root and stay inside it."
+            .to_string()
+    } else if names.is_empty() {
         "Run a command of the project. No command is allowed right now.".to_string()
     } else {
         format!(
@@ -60,6 +66,18 @@ pub fn spec(policy: &Policy) -> (String, Value) {
         description.push_str(&format!(
             " {} wait for the user's ok before running.",
             asks.join(", ")
+        ));
+    }
+    if policy.others() {
+        description.push_str(&format!(
+            " {}any other program may be called by its name, and always waits for the \
+             user's ok; never a shell ({}) or what runs another program.",
+            if names.is_empty() {
+                "Every call waits for the user's ok: "
+            } else {
+                "Besides these, "
+            },
+            ["sh", "bash", "cmd"].join(", ")
         ));
     }
     let dir_help = if policy.subfolders() {
@@ -84,8 +102,10 @@ pub fn spec(policy: &Policy) -> (String, Value) {
 /// A command checked and ready to run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Exec {
-    /// The catalogue id: `git diff`.
+    /// The catalogue id: `git diff`, or `other programs`.
     pub id: &'static str,
+    /// What the user is asked to run: the id, or the program called.
+    pub name: String,
     /// The executable, resolved.
     pub program: PathBuf,
     /// Everything after the program, the id's own words first.
@@ -118,25 +138,73 @@ pub fn prepare(sandbox: &Sandbox, policy: &Policy, arguments: &Value) -> Result<
             names.join(", ")
         }
     };
-    let Some((entry, n)) = catalog::match_call(policy, &tokens) else {
-        let head = tokens.iter().take(2).cloned().collect::<Vec<_>>().join(" ");
-        return Err(usage(format!(
-            "`{head}` is not allowed; the commands you may run are: {}",
-            list()
-        )));
+    let call = match catalog::match_call(policy, &tokens) {
+        Some((entry, n)) => Call {
+            id: entry.id,
+            name: entry.id.to_string(),
+            help: entry.help,
+            asks: policy.get(entry.id) == Permission::Ask,
+            program: entry.program(),
+            coreutils: entry.coreutils,
+            prefix: entry.prefix(),
+            start: n,
+            rules: entry,
+            needs: Some(n),
+        },
+        // not in the catalogue, or off there: any other program, asking
+        None if policy.others() => {
+            let program = tokens[0].as_str();
+            catalog::check_program(program).map_err(&usage)?;
+            let other = catalog::find(OTHER_PROGRAMS).expect("other programs is in the catalogue");
+            let (rules, needs) = match catalog::rules_for(&tokens) {
+                Some((e, true)) => (e, Some(e.words().count())),
+                Some((e, false)) => (e, None),
+                None => (other, None),
+            };
+            Call {
+                id: OTHER_PROGRAMS,
+                name: program.to_string(),
+                help: if needs.is_some() {
+                    rules.help
+                } else {
+                    other.help
+                },
+                asks: true,
+                program,
+                coreutils: rules.coreutils,
+                prefix: Vec::new(),
+                start: 1,
+                rules,
+                needs,
+            }
+        }
+        None => {
+            let head = tokens.iter().take(2).cloned().collect::<Vec<_>>().join(" ");
+            return Err(usage(format!(
+                "`{head}` is not allowed; the commands you may run are: {}",
+                list()
+            )));
+        }
     };
-    let rest = &tokens[n..];
+    let rest = &tokens[call.start..];
+    catalog::check_args(call.rules, rest).map_err(&usage)?;
     for arg in rest {
-        catalog::check_arg(entry, arg).map_err(&usage)?;
-        // the paths the file tools refuse are refused here too, by name
+        // the paths the file tools refuse are refused here too, by name,
+        // `file:.env` as well
         sandbox.deny_check(arg)?;
+        if let Some(path) = catalog::behind_file_scheme(arg) {
+            sandbox.deny_check(path)?;
+        }
     }
-    if !entry.needs.is_empty() && !rest.iter().any(|a| entry.needs.contains(&a.as_str())) {
-        return Err(usage(format!(
-            "{} needs `{}`",
-            entry.id,
-            entry.needs.join("` or `")
-        )));
+    let needs = call.rules.needs;
+    if let Some(n) = call.needs {
+        if !needs.is_empty() && !tokens[n..].iter().any(|a| needs.contains(&a.as_str())) {
+            return Err(usage(format!(
+                "{} needs `{}`",
+                call.rules.id,
+                needs.join("` or `")
+            )));
+        }
     }
     let (dir, rel_dir) = match a.dir.as_deref().map(str::trim) {
         Some(d) if !d.is_empty() && d != "." => {
@@ -152,29 +220,50 @@ pub fn prepare(sandbox: &Sandbox, policy: &Policy, arguments: &Value) -> Result<
         }
         _ => (sandbox.root().to_path_buf(), ".".to_string()),
     };
-    let Some(program) = entry.resolve() else {
+    let Some(program) = catalog::resolve(call.program, call.coreutils) else {
         return Err(usage(format!(
             "`{}` is not installed on this machine",
-            entry.program()
+            call.program
         )));
     };
-    let mut argv = entry.prefix();
+    let mut argv = call.prefix;
     argv.extend(rest.iter().cloned());
-    let mut line = entry.id.to_string();
+    let mut line = tokens[..call.start].join(" ");
     for r in rest {
         line.push(' ');
         line.push_str(&quote(r));
     }
     Ok(Exec {
-        id: entry.id,
+        id: call.id,
+        name: call.name,
         program,
         args: argv,
         dir,
         rel_dir,
-        asks: policy.get(entry.id) == Permission::Ask,
-        help: entry.help,
+        asks: call.asks,
+        help: call.help,
         line,
     })
+}
+
+/// What a call resolved to before its arguments are checked: a command of
+/// the catalogue, or another program under the rules of its family.
+struct Call<'a> {
+    id: &'static str,
+    name: String,
+    help: &'static str,
+    asks: bool,
+    /// The program's name, as looked for on `PATH`.
+    program: &'a str,
+    coreutils: bool,
+    /// The id's own words after the program: `["diff"]` for `git diff`.
+    prefix: Vec<String>,
+    /// Where the call's own arguments start in the tokens.
+    start: usize,
+    /// Whose deny list and literal flags the arguments go through.
+    rules: &'static catalog::Entry,
+    /// Where the arguments of a whole entry start, when its `needs` apply.
+    needs: Option<usize>,
 }
 
 /// An argument as it would be typed: quoted when it has a space.
@@ -343,7 +432,7 @@ fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::thread::Joi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use moon_core::config::ids::SUBFOLDERS;
+    use moon_core::config::ids::{OTHER_PROGRAMS, SUBFOLDERS};
     use std::fs;
 
     fn tree() -> (tempfile::TempDir, Sandbox) {
@@ -428,6 +517,28 @@ mod tests {
         let err = prep(json!({"command": "cat .env"})).unwrap_err();
         assert!(err.to_string().contains("looks like a secret"), "{err}");
         assert!(matches!(err, ToolError::Denied(_)));
+        let pkey = policy(&[
+            ("openssl pkey", Permission::Ask),
+            ("openssl req", Permission::Ask),
+        ]);
+        let err = prepare(
+            &sb,
+            &pkey,
+            &json!({"command": "openssl pkey", "args": ["-in", "k.pem", "-passin", "file:.env"]}),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("looks like a secret"), "{err}");
+        // the subject of a certificate is not a path; checked before the
+        // program is looked for, so the machine does not matter
+        let r = prepare(
+            &sb,
+            &pkey,
+            &json!({"command": "openssl req", "args": ["-x509", "-subj", "/CN=localhost"]}),
+        );
+        match r {
+            Ok(e) => assert_eq!(e.args, vec!["req", "-x509", "-subj", "/CN=localhost"]),
+            Err(err) => assert!(err.to_string().contains("not installed"), "{err}"),
+        }
         // `up` only detached, `logs` never following, whether docker is
         // here or not
         let compose = policy(&[
@@ -465,6 +576,90 @@ mod tests {
         let err =
             prepare(&sb, &with_sub, &json!({"command": "ls", "dir": "src/a.rs"})).unwrap_err();
         assert!(err.to_string().contains("not a directory"), "{err}");
+    }
+
+    #[test]
+    fn other_programs_always_ask_and_keep_every_check() {
+        let (_d, sb) = tree();
+        let off = policy(&[("ls", Permission::Allow)]);
+        let err = prepare(&sb, &off, &json!({"command": "rm src/a.rs"})).unwrap_err();
+        assert!(
+            err.to_string().contains("`rm src/a.rs` is not allowed"),
+            "{err}"
+        );
+        // allow is not something it can be: it stays at ask
+        let p = policy(&[
+            ("ls", Permission::Allow),
+            (OTHER_PROGRAMS, Permission::Allow),
+        ]);
+        assert_eq!(p.get(OTHER_PROGRAMS), Permission::Ask);
+        let prep = |v: Value| prepare(&sb, &p, &v);
+        #[cfg(unix)]
+        {
+            let e = prep(json!({"command": "rm", "args": ["src/a.rs"]})).unwrap();
+            assert_eq!((e.id, e.name.as_str()), (OTHER_PROGRAMS, "rm"));
+            assert_eq!(
+                (e.args.clone(), e.line.as_str()),
+                (vec!["src/a.rs".to_string()], "rm src/a.rs")
+            );
+            assert!(e.asks);
+            // what the catalogue has on keeps its own permission
+            let e = prep(json!({"command": "ls src"})).unwrap();
+            assert_eq!((e.id, e.asks), ("ls", false));
+            // and one it has off asks, with its help
+            let e = prep(json!({"command": "cat src/a.rs"})).unwrap();
+            assert_eq!(
+                (e.id, e.name.as_str(), e.asks),
+                (OTHER_PROGRAMS, "cat", true)
+            );
+            assert_eq!(e.help, catalog::find("cat").unwrap().help);
+        }
+        // never a shell, a path or a program that runs another one
+        for bad in [
+            "sh -c ls",
+            "bash",
+            "BASH.EXE",
+            "env FOO=1 ls",
+            "xargs rm",
+            "sudo ls",
+            "/bin/ls",
+            "./run.sh",
+            "..\\x.exe",
+            "C:x",
+        ] {
+            let err = prep(json!({"command": bad})).unwrap_err();
+            assert!(matches!(err, ToolError::Usage(_)), "{bad}: {err}");
+        }
+        // arguments leave nothing: outside, secrets, `file:`
+        for bad in ["rm /etc/passwd", "rm ../x", "cat .env", "cp file:.env x"] {
+            assert!(prep(json!({"command": bad})).is_err(), "{bad}");
+        }
+        // the family's deny list and an entry's needs come with it, off or on
+        let err = prep(json!({"command": "git push --exec-path=x"})).unwrap_err();
+        assert!(
+            err.to_string().contains("`--exec-path` is not allowed"),
+            "{err}"
+        );
+        let err = prep(json!({"command": "docker compose up api"})).unwrap_err();
+        assert!(
+            err.to_string().contains("needs `-d` or `--detach`"),
+            "{err}"
+        );
+        let err = prep(json!({"command": "curl -d @x https://example.com"})).unwrap_err();
+        assert!(err.to_string().contains("`-d` is not allowed"), "{err}");
+        // a program that is not there says so
+        let err = prep(json!({"command": "moon-no-such-program-xyz"})).unwrap_err();
+        assert!(err.to_string().contains("not installed"), "{err}");
+    }
+
+    #[test]
+    fn the_spec_tells_about_other_programs() {
+        let only = policy(&[(OTHER_PROGRAMS, Permission::Ask)]);
+        let (d, _) = spec(&only);
+        assert!(d.contains("Every call waits for the user's ok"), "{d}");
+        let both = policy(&[("ls", Permission::Allow), (OTHER_PROGRAMS, Permission::Ask)]);
+        let (d, _) = spec(&both);
+        assert!(d.contains("ls") && d.contains("Besides these"), "{d}");
     }
 
     #[test]
@@ -539,6 +734,7 @@ mod tests {
         };
         let exec = Exec {
             id: "test",
+            name: "test".into(),
             program: PathBuf::from(program),
             args: args.into_iter().map(String::from).collect(),
             dir: sb.root().to_path_buf(),

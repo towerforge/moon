@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::*;
 use moon_agent::{
     editor_with, file_name, run_command, AgentFile, Command, Event, Exec, Harness, Limits, Pending,
-    PendingEdit, Policy, Sandbox, Stop, Verdict,
+    PendingEdit, Policy, Sandbox, Stop, Tool, Verdict,
 };
 use moon_core::write_text;
 
@@ -64,9 +64,11 @@ impl Approval {
         }
     }
 
-    /// Body lines there are to scroll: the diff, or the few of a command.
+    /// Body lines there are to scroll: the diff, or the few of a command,
+    /// a move or an empty file or folder.
     pub fn body_len(&self) -> usize {
         match &self.pending {
+            Pending::Edit(e) if e.diff.lines.is_empty() => crate::view::MOVE_BODY,
             Pending::Edit(e) => e.diff.lines.len(),
             Pending::Run(_) => crate::view::RUN_BODY,
         }
@@ -80,17 +82,19 @@ impl Approval {
     /// Title of the panel: the kind of action, what it acts on goes under it.
     pub fn title(&self) -> &'static str {
         match &self.pending {
+            Pending::Edit(e) if e.tool == Tool::MoveFile => "Move",
+            Pending::Edit(e) if e.tool == Tool::DeleteFile => "Delete",
             Pending::Edit(e) if e.expect.is_none() => "Create file",
             Pending::Edit(_) => "Edit file",
             Pending::Run(_) => "Run command",
         }
     }
 
-    /// Under the title: the file, or the command of the catalogue.
-    pub fn subject(&self) -> &str {
+    /// Under the title: the file, `from → to` for a move, or the command.
+    pub fn subject(&self) -> String {
         match &self.pending {
-            Pending::Edit(e) => &e.path,
-            Pending::Run(e) => e.id,
+            Pending::Edit(e) => e.subject(),
+            Pending::Run(e) => e.name.clone(),
         }
     }
 
@@ -98,6 +102,8 @@ impl Approval {
     /// when it is not the root.
     pub fn info(&self) -> String {
         match &self.pending {
+            Pending::Edit(e) if e.tool == Tool::MoveFile => String::new(),
+            Pending::Edit(e) if e.tool == Tool::DeleteFile => format!("−{}", e.diff.removed),
             Pending::Edit(e) => e.counts(),
             Pending::Run(e) if e.rel_dir != "." => format!("in {}", e.rel_dir),
             Pending::Run(_) => String::new(),
@@ -110,13 +116,17 @@ impl Approval {
         match &self.pending {
             Pending::Edit(e) => {
                 let name = e.path.rsplit('/').next().unwrap_or(&e.path);
-                if e.expect.is_none() {
+                if e.tool == Tool::MoveFile {
+                    ("Do you want to move ", name, "?")
+                } else if e.tool == Tool::DeleteFile {
+                    ("Do you want to delete ", name, "?")
+                } else if e.expect.is_none() {
                     ("Do you want to create ", name, "?")
                 } else {
                     ("Do you want to make this edit to ", name, "?")
                 }
             }
-            Pending::Run(e) => ("Do you want to run ", e.id, "?"),
+            Pending::Run(e) => ("Do you want to run ", &e.name, "?"),
         }
     }
 }
@@ -554,6 +564,7 @@ impl App {
     }
 
     /// The commands the model may run, by id; none while it is off.
+    #[cfg(test)]
     pub(crate) fn tools_commands(&self) -> Vec<&'static str> {
         match &self.harness {
             Some(h) => h.agent().command_ids(),
@@ -771,7 +782,7 @@ impl App {
                     self.push_item(Item::Step(step));
                     self.follow = true;
                 }
-                Command::Finished => {}
+                Command::Finished => self.push_turn_tools(),
                 Command::Stopped { reason, results } => {
                     for m in results {
                         self.persist(&m);
@@ -787,8 +798,19 @@ impl App {
                             self.follow = true;
                         }
                     }
+                    self.push_turn_tools();
                 }
             }
+        }
+    }
+
+    /// The turn is over, done or stopped: what the model used in it closes
+    /// it, under the reply and under why it stopped, if it used anything.
+    fn push_turn_tools(&mut self) {
+        let tools = self.turn_tools();
+        if !tools.is_empty() {
+            self.push_item(Item::Tools(tools));
+            self.follow = true;
         }
     }
 

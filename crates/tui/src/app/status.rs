@@ -249,113 +249,126 @@ impl App {
         }
     }
 
-    /// The one permanent sign that the model can reach the project, at the
-    /// left of the hints row, `moon` and bold, like the mode indicators of
-    /// Claude Code: `⏵⏵ Read · Edit · Create · 4 commands`, one word per
-    /// file capability that is on and how many commands are — the effective
-    /// ones, and first the agent's name when one is chosen.
-    pub fn edit_mode_span(&self) -> Option<Span<'static>> {
-        // everything runs through an agent, so the name is always there,
-        // `default` included; off, the marker says what /agent would run on
-        if !self.tools_on {
-            return Some(Span::styled(
-                format!("⏵ {} · all off", self.agent),
-                self.theme.muted(),
-            ));
-        }
-        let policy = self.policy();
-        let mut words: Vec<String> = vec![self.agent.clone()];
-        if policy.reads() {
-            words.push("Read".into());
-        }
-        if policy.edits() {
-            words.push("Edit".into());
-        }
-        if policy.creates() {
-            words.push("Create".into());
-        }
-        let n = self.tools_commands().len();
-        if n > 0 {
-            words.push(format!("{n} {}", models::plural(n, "command")));
-        }
-        Some(Span::styled(
-            format!("⏵⏵ {}", words.join(" · ")),
-            self.theme.soft_bold(),
-        ))
+    /// The only thing at the left of the bottom row: `⏵⏵` and the name of the
+    /// agent everything runs through, `default` included — in `moon-soft` and bold
+    /// while it has permissions, muted when they are all off.
+    pub fn agent_span(&self) -> Span<'static> {
+        let style = if self.tools_on {
+            self.theme.soft_bold()
+        } else {
+            self.theme.muted()
+        };
+        Span::styled(format!("⏵⏵ {}", self.agent), style)
     }
 
     /// What goes to the right of the model in the hints row: the memory the
-    /// model takes up and the machine readings,
-    /// `12.1G · cpu 34% ▲61 · ram 57% ▲75`, the current value and the peak of
-    /// the last 3 minutes, then `gpu 78% ▲90` on a machine with a card and
-    /// `swap 1.2G` if any. Under 120 columns the peaks and the size drop
-    /// out; under 90, everything does.
+    /// model takes up, `12.1G`, and how much of it stays on the CPU when it
+    /// does not all fit in the GPU. Only from 120 columns on.
     pub fn stats_spans(&self, width: u16) -> Vec<Span<'static>> {
         let t = &self.theme;
-        if width < STATS_SHORT_MIN_WIDTH {
-            return Vec::new();
-        }
-        let full = width >= STATS_FULL_MIN_WIDTH;
         let mut v: Vec<Span<'static>> = Vec::new();
-        // the model in memory: the size showing up is the sign that it is
-        // loaded; if it does not all fit in the GPU, how much stays on the CPU
-        if full {
-            if let LoadedState::Loaded(m) = &self.loaded {
-                dot(&mut v, t);
-                v.push(Span::styled(
-                    format!("{}G", crate::sysmon::fmt_gib(m.size_bytes)),
-                    t.muted(),
-                ));
-                let cpu = m.cpu_percent();
-                if cpu > 0 {
-                    dot(&mut v, t);
-                    v.push(Span::styled(format!("{cpu}% cpu"), t.soft_bold()));
-                }
-            }
+        if width < MODEL_SIZE_MIN_WIDTH {
+            return v;
         }
-        if let Some(s) = self.sys.current() {
-            let pct = |p: f32| {
-                if p >= STATS_HOT_PCT {
-                    t.soft_bold()
-                } else {
-                    t.soft()
-                }
-            };
+        if let LoadedState::Loaded(m) = &self.loaded {
             dot(&mut v, t);
-            v.push(Span::styled("cpu ", t.muted()));
-            v.push(Span::styled(format!("{:.0}%", s.cpu), pct(s.cpu)));
-            if full {
-                v.push(Span::styled(
-                    format!(" ▲{:.0}", self.sys.peak_cpu()),
-                    t.muted(),
-                ));
-            }
-            v.push(Span::styled(" · ram ", t.muted()));
-            v.push(Span::styled(format!("{:.0}%", s.ram), pct(s.ram)));
-            if full {
-                v.push(Span::styled(
-                    format!(" ▲{:.0}", self.sys.peak_ram()),
-                    t.muted(),
-                ));
-            }
-            if s.gpu_total > 0 {
-                v.push(Span::styled(" · gpu ", t.muted()));
-                v.push(Span::styled(format!("{:.0}%", s.gpu), pct(s.gpu)));
-                if full {
-                    v.push(Span::styled(
-                        format!(" ▲{:.0}", self.sys.peak_gpu()),
-                        t.muted(),
-                    ));
-                }
-            }
-            if s.swap_used > 0 {
-                v.push(Span::styled(
-                    format!(" · swap {}G", crate::sysmon::fmt_gib(s.swap_used)),
-                    t.muted(),
-                ));
+            v.push(Span::styled(
+                format!("{}G", crate::sysmon::fmt_gib(m.size_bytes)),
+                t.muted(),
+            ));
+            let cpu = m.cpu_percent();
+            if cpu > 0 {
+                dot(&mut v, t);
+                v.push(Span::styled(format!("{cpu}% cpu"), t.soft_bold()));
             }
         }
         v
+    }
+
+    /// The machine on the top row: `cpu 17% ▲39 · ram 84% ▲84`, the
+    /// current value and the peak of the last 3 minutes, then `gpu 12% ▲30`
+    /// on a machine with a card and `swap 4.2G` if any. Nothing until the
+    /// first sample, or ever with `system_stats = false`.
+    pub fn machine_spans(&self) -> Vec<Span<'static>> {
+        let t = &self.theme;
+        let Some(s) = self.sys.current().filter(|_| self.cfg.general.system_stats) else {
+            return Vec::new();
+        };
+        let hot = |p: f32| {
+            if p >= STATS_HOT_PCT {
+                t.soft_bold()
+            } else {
+                t.soft()
+            }
+        };
+        let mut v: Vec<Span<'static>> = Vec::new();
+        let mut reading = |label: &str, value: f32, peak: f32| {
+            if !v.is_empty() {
+                v.push(Span::styled(" · ", t.muted()));
+            }
+            v.push(Span::styled(format!("{label} "), t.muted()));
+            v.push(Span::styled(format!("{value:.0}%"), hot(value)));
+            v.push(Span::styled(format!(" ▲{peak:.0}"), t.muted()));
+        };
+        reading("cpu", s.cpu, self.sys.peak_cpu());
+        reading("ram", s.ram, self.sys.peak_ram());
+        if s.gpu_total > 0 {
+            reading("gpu", s.gpu, self.sys.peak_gpu());
+        }
+        if s.swap_used > 0 {
+            v.push(Span::styled(
+                format!(" · swap {}G", crate::sysmon::fmt_gib(s.swap_used)),
+                t.muted(),
+            ));
+        }
+        v
+    }
+
+    /// Left of the top row: moon, its version and the directory it started
+    /// in, `moon v0.5.0 · ~/Towerforge/moon`; when the daily check found a
+    /// newer moon, `↑ v0.6.0` in `moon` after the version.
+    pub fn identity_spans(&self) -> Vec<Span<'static>> {
+        let t = &self.theme;
+        let mut v = vec![
+            Span::styled("moon", t.soft_bold()),
+            Span::styled(format!(" v{}", self.version), t.muted()),
+        ];
+        if let Some(newer) = &self.update_available {
+            v.push(Span::styled(format!(" ↑ v{newer}"), t.accent()));
+        }
+        v.push(Span::styled(format!(" · {}", self.cwd), t.muted()));
+        v
+    }
+
+    /// What the model used in the turn in progress or just done — the steps
+    /// since the last question — in order of first use, with how many times:
+    /// `read ×3`, `git diff ×2`. A command counts by what the user was asked
+    /// to run, a file tool by its verb. Goes under the reply when the turn ends.
+    pub fn turn_tools(&self) -> Vec<(String, usize)> {
+        let from = self
+            .items
+            .iter()
+            .rposition(|i| matches!(i, Item::Message(m) if m.role == Role::User))
+            .map_or(0, |i| i + 1);
+        let mut out: Vec<(String, usize)> = Vec::new();
+        for item in &self.items[from..] {
+            let Item::Step(s) = item else { continue };
+            let name = s
+                .command
+                .clone()
+                .unwrap_or_else(|| s.tool.verb().to_string());
+            match out.iter_mut().find(|(n, _)| *n == name) {
+                Some((_, n)) => *n += 1,
+                None => out.push((name, 1)),
+            }
+        }
+        out
+    }
+
+    /// The empty box suggests what to ask only before the first request:
+    /// nothing sent yet, and no question in a session picked up.
+    pub fn shows_placeholder(&self) -> bool {
+        self.input.is_empty() && !self.sent && !self.messages().any(|m| m.role == Role::User)
     }
 
     /// Tokens consumed in the session: sum of prompt and reply of each exchange.
@@ -441,22 +454,6 @@ impl App {
                 SessionAction::Rename { .. } => vec![("enter", "save"), ("esc", "cancel")],
             },
             None => Vec::new(),
-        }
-    }
-
-    /// Hints on the left of the bottom row. While a panel is open the row is
-    /// not drawn: the panel carries its own shortcuts in its footer.
-    pub fn hints(&self) -> &'static str {
-        match self.is_streaming() {
-            true => " esc to cancel · ctrl+c to cancel · pgup/pgdn scroll",
-            false if self.suggest_navigable() => {
-                " ↑↓ choose · tab or enter to complete · esc to clear"
-            }
-            false if self.suggestions().is_some() => " tab or enter to complete · esc to clear",
-            false if self.tools_on => {
-                " /agent agents · /model switch model · ctrl+s sessions · /help"
-            }
-            false => " /agent agents · /model switch model · ctrl+s sessions · /help",
         }
     }
 }

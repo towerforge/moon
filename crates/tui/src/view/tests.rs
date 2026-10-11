@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
-use moon_core::{Config, ConfigSource, Registry};
+use moon_core::{Config, ConfigSource, Message, Registry, Role};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
 use super::*;
-use crate::app::{Action, HelpState, HelpTab, RunOptions};
+use crate::app::{Action, HelpState, HelpTab, Item, RunOptions};
 use crossterm::event::KeyCode;
 
 pub(super) fn app() -> App {
@@ -16,7 +16,7 @@ pub(super) fn app() -> App {
 
 /// The app with the project standing on `root`, for what reads the tree.
 fn app_at(root: std::path::PathBuf) -> App {
-    App::new(RunOptions {
+    let mut app = App::new(RunOptions {
         config: Config::default(),
         config_source: ConfigSource::Default(std::path::PathBuf::from("/config.toml")),
         registry: Arc::new(Registry::new()),
@@ -28,7 +28,10 @@ fn app_at(root: std::path::PathBuf) -> App {
         root,
         state_dir: None,
         agents_dir: None,
-    })
+    });
+    // the top row has a test of its own; the rest go without it
+    app.cfg.general.system_stats = false;
+    app
 }
 
 pub(super) fn screen(term: &Terminal<TestBackend>) -> Vec<String> {
@@ -43,74 +46,193 @@ pub(super) fn screen(term: &Terminal<TestBackend>) -> Vec<String> {
 }
 
 #[test]
+fn the_top_row_has_moon_the_directory_and_the_machine() {
+    use crate::sysmon::Sample;
+    let mut app = app();
+    app.loading = false;
+    // moon, its version and the directory on the left, no rule under them:
+    // the conversation's first row follows; with the readings off nothing
+    // at the right
+    let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    term.draw(|f| view(&mut app, f)).unwrap();
+    let s = screen(&term);
+    assert_eq!(
+        s[0].trim_end(),
+        " moon v0.1.0 · ~/Towerforge/moon",
+        "{:?}",
+        s[0]
+    );
+    assert!(!s[1].contains('─'), "{:?}", s[1]);
+    // the directory has left the bottom row
+    assert!(
+        s[29].starts_with(" ⏵⏵ default · /agent · /model  "),
+        "{}",
+        s[29]
+    );
+    assert!(!s[29].contains("Towerforge"), "{}", s[29]);
+    let buf = term.backend().buffer();
+    assert_eq!(buf[(1, 0)].fg, app.theme.moon_soft);
+
+    // the readings flush right, the value and the peak of each
+    app.cfg.general.system_stats = true;
+    app.sys.push(Sample::new(61.0, 24 << 30, 32 << 30, 0));
+    app.sys.push(Sample::new(34.0, 18 << 30, 32 << 30, 0));
+    term.draw(|f| view(&mut app, f)).unwrap();
+    let s = screen(&term);
+    assert!(
+        s[0].starts_with(" moon v0.1.0 · ~/Towerforge/moon "),
+        "{:?}",
+        s[0]
+    );
+    assert!(s[0].ends_with(" cpu 34% ▲61 · ram 56% ▲75 "), "{:?}", s[0]);
+    assert!(!s[29].contains("cpu"), "{}", s[29]);
+
+    // the gpu with a card to read, the swap only when in use, and a newer
+    // moon after the version
+    app.sys
+        .push(Sample::new(34.0, 18 << 30, 32 << 30, 1288490189).with_gpu(6 << 30, 8 << 30));
+    app.update_available = Some("0.2.0".into());
+    term.draw(|f| view(&mut app, f)).unwrap();
+    let s = screen(&term);
+    assert!(
+        s[0].starts_with(" moon v0.1.0 ↑ v0.2.0 · ~/Towerforge/moon "),
+        "{:?}",
+        s[0]
+    );
+    assert!(
+        s[0].ends_with(" cpu 34% ▲61 · ram 56% ▲75 · gpu 75% ▲75 · swap 1.2G "),
+        "{:?}",
+        s[0]
+    );
+
+    // narrow: the directory gives way, the readings stay whole
+    let mut term = Terminal::new(TestBackend::new(70, 30)).unwrap();
+    term.draw(|f| view(&mut app, f)).unwrap();
+    let s = screen(&term);
+    assert!(s[0].contains('…'), "{:?}", s[0]);
+    assert!(s[0].ends_with("swap 1.2G "), "{:?}", s[0]);
+
+    // on a short terminal the rows go to the conversation
+    let mut term = Terminal::new(TestBackend::new(120, 10)).unwrap();
+    term.draw(|f| view(&mut app, f)).unwrap();
+    assert!(!screen(&term).iter().any(|r| r.contains("moon v0.1.0")));
+}
+
+#[test]
+fn the_turn_tools_go_under_the_reply() {
+    let mut app = app();
+    app.loading = false;
+    app.items.clear();
+    app.push_item(Item::Message(Message::new(Role::User, "look")));
+    app.push_item(Item::Message(Message::new(Role::Assistant, "done")));
+    app.push_item(Item::Tools(vec![
+        ("read".into(), 3),
+        ("git diff".into(), 2),
+        ("edit".into(), 1),
+    ]));
+    let lines: Vec<String> = app
+        .visible_lines(80, 20)
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    let at = lines
+        .iter()
+        .position(|l| l.contains(" tools ── "))
+        .expect("summary");
+    assert_eq!(
+        lines[at], "─── 6 tools ── read ×3 · git diff ×2 · edit ×1",
+        "{lines:?}"
+    );
+    // a blank row between the reply and the summary
+    assert_eq!(lines[at - 1], "", "{lines:?}");
+
+    // narrow: what does not fit goes on the next line, under the first tool
+    let lines: Vec<String> = app
+        .visible_lines(40, 20)
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    let at = lines.iter().position(|l| l.contains(" tools ── ")).unwrap();
+    assert_eq!(
+        lines[at], "─── 6 tools ── read ×3 · git diff ×2",
+        "{lines:?}"
+    );
+    assert_eq!(lines[at + 1], "               edit ×1", "{lines:?}");
+
+    // one call, singular
+    app.items.pop();
+    app.push_item(Item::Tools(vec![("read".into(), 1)]));
+    let lines: Vec<String> = app
+        .visible_lines(80, 20)
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    assert!(
+        lines.iter().any(|l| l == "─── 1 tool ── read ×1"),
+        "{lines:?}"
+    );
+}
+
+#[test]
 fn startup_screen() {
     let mut app = app();
     app.loading = false;
     let mut term = Terminal::new(TestBackend::new(90, 24)).unwrap();
     term.draw(|f| view(&mut app, f)).unwrap();
     let s = screen(&term);
-    // a blank row keeps the moon off the top edge
-    assert_eq!(s[0].trim(), "");
-    assert!(s[1].starts_with("   ▄█        moon v0.1.0"), "{}", s[1]);
+    // the top row, then the conversation with the notes of the start — the
+    // default configuration among them — and nothing else
     assert!(
-        s[2].starts_with("  ███        no model · /model"),
-        "{}",
-        s[2]
+        s[0].starts_with(" moon v0.1.0 · ~/Towerforge/moon"),
+        "{s:?}"
     );
     assert!(
-        s[3].starts_with("  ████▄▄▄█   ~/Towerforge/moon"),
-        "{}",
-        s[3]
+        s.iter().any(|r| r.contains("default configuration")),
+        "{s:?}"
     );
-    assert!(
-        s[4].starts_with("   ▀████▀    default configuration"),
-        "{}",
-        s[4]
-    );
-    assert_eq!(s[5].trim(), "");
+    assert!(!s.iter().any(|r| r.contains("▄█")), "{s:?}");
     assert!(s[20].starts_with("─────"));
     assert!(s[21].starts_with("❯ "));
-    assert!(s[23].contains("default · all off"), "{}", s[23]);
-    assert!(s[23].contains("/model"), "{}", s[23]);
+    // bottom left, the agent's name and the two commands that change it
+    assert_eq!(
+        s[23].trim_end(),
+        " ⏵⏵ default · /agent · /model                                                    no model"
+    );
+    // the empty box suggests what to ask, in grey, the cursor on its first
+    // letter
+    assert_eq!(
+        s[21].trim_end(),
+        "❯ Try \"how do I log an error?\"",
+        "{}",
+        s[21]
+    );
     let buf = term.backend().buffer();
-    // the moon's color is `moon`, and the name `moon` goes in `moon` and bold
-    assert_eq!(buf[(3, 1)].fg, app.theme.moon);
-    assert_eq!(buf[(13, 1)].fg, app.theme.moon);
-    assert!(buf[(13, 1)]
-        .modifier
-        .contains(ratatui::style::Modifier::BOLD));
-    assert_eq!(buf[(18, 1)].fg, app.theme.ink_muted);
     // the cursor is a `moon` block on the typing cell, and the terminal's stays hidden
     assert_eq!(buf[(2, 21)].bg, app.theme.moon);
     assert_eq!(buf[(2, 21)].fg, app.theme.on_moon);
-}
+    assert_eq!(buf[(3, 21)].fg, app.theme.ink_muted);
 
-#[test]
-fn the_model_row_is_dimmed() {
-    use crate::app::{Current, ProviderState};
-    let mut app = app();
-    app.loading = false;
-    app.current = Some(Current {
-        provider: "ollama".into(),
-        model: "qwen2.5-coder:14b".into(),
-    });
-    app.providers.push(ProviderState {
-        id: "ollama".into(),
-        kind: "ollama",
-        base_url: "http://localhost:11434".into(),
-        health: None,
-    });
-    app.ctx_len = Some(32_768);
-    let mut term = Terminal::new(TestBackend::new(90, 24)).unwrap();
+    // the first key typed takes it away
+    app.update(key(KeyCode::Char('h')), &tx_dummy());
     term.draw(|f| view(&mut app, f)).unwrap();
-    let s = screen(&term);
-    let row = "qwen2.5-coder:14b (ctx 32.8k) · ollama · http://localhost:11434";
-    assert!(s[2].starts_with(&format!("  ███        {row}")), "{}", s[2]);
-    // the whole model row goes in `ink-muted`, name included
-    let buf = term.backend().buffer();
-    for x in 13..13 + row.chars().count() {
-        assert_eq!(buf[(x as u16, 2)].fg, app.theme.ink_muted, "column {x}");
+    assert_eq!(screen(&term)[21].trim_end(), "❯ h");
+    // and once something is sent — here a command, with no model to ask —
+    // it does not come back
+    app.update(key(KeyCode::Backspace), &tx_dummy());
+    for c in "/version".chars() {
+        app.update(key(KeyCode::Char(c)), &tx_dummy());
     }
+    app.update(key(KeyCode::Enter), &tx_dummy());
+    term.draw(|f| view(&mut app, f)).unwrap();
+    assert_eq!(screen(&term)[21].trim_end(), "❯", "{:?}", screen(&term));
+
+    // nor in a session picked up with a question in it
+    let mut app = super::tests::app();
+    app.loading = false;
+    app.items
+        .push(Item::Message(Message::new(Role::User, "earlier question")));
+    term.draw(|f| view(&mut app, f)).unwrap();
+    assert_eq!(screen(&term)[21].trim_end(), "❯");
 }
 
 #[test]
@@ -164,7 +286,7 @@ fn grouped_model_picker() {
         "{s}"
     );
     // not everything fits: the bar on the right and the position in the footer
-    assert!(s.contains("1-15/27"), "{s}");
+    assert!(s.contains("1-14/27"), "{s}");
     let bar: String = rows
         .iter()
         .filter_map(|r| r.chars().nth(99))
@@ -364,54 +486,8 @@ fn activity_on_the_left_and_status_on_the_right() {
     assert!(!status.contains('●'), "{status}");
     // the model goes at the very bottom, to the right of the hints
     let hints = &s[11];
-    assert!(
-        hints.starts_with(" ⏵ default · all off · esc to cancel"),
-        "{hints}"
-    );
+    assert!(hints.starts_with(" ⏵⏵ default "), "{hints}");
     assert!(hints.trim_end().ends_with(" m"), "{hints}");
-}
-
-#[test]
-fn machine_readings_at_the_bottom_right() {
-    use crate::app::Current;
-    use crate::sysmon::Sample;
-    let mut app = app();
-    app.loading = false;
-    app.current = Some(Current {
-        provider: "ollama".into(),
-        model: "m".into(),
-    });
-    app.sys.push(Sample::new(61.0, 24 << 30, 32 << 30, 0));
-    app.sys.push(Sample::new(34.0, 18 << 30, 32 << 30, 0));
-    let hints_at = |app: &mut App, cols: u16| {
-        let mut term = Terminal::new(TestBackend::new(cols, 12)).unwrap();
-        term.draw(|f| view(app, f)).unwrap();
-        screen(&term)[11].trim_end().to_string()
-    };
-    // with width to spare: the current value and the window's peak
-    let h = hints_at(&mut app, 130);
-    assert!(h.ends_with("m · cpu 34% ▲61 · ram 56% ▲75"), "{h}");
-    // below 120 columns the peaks drop off
-    let h = hints_at(&mut app, 100);
-    assert!(h.ends_with("m · cpu 34% · ram 56%"), "{h}");
-    // and below 90, the readings altogether
-    let h = hints_at(&mut app, 80);
-    assert!(h.ends_with(" m"), "{h}");
-    // swap only shows up if there is any
-    app.sys
-        .push(Sample::new(34.0, 18 << 30, 32 << 30, 1288490189));
-    let h = hints_at(&mut app, 130);
-    assert!(h.ends_with("· ram 56% ▲75 · swap 1.2G"), "{h}");
-    // and the gpu, with a card to read, between the ram and the swap
-    app.sys
-        .push(Sample::new(34.0, 18 << 30, 32 << 30, 1288490189).with_gpu(6 << 30, 8 << 30));
-    let h = hints_at(&mut app, 130);
-    assert!(
-        h.ends_with("· ram 56% ▲75 · gpu 75% ▲75 · swap 1.2G"),
-        "{h}"
-    );
-    let h = hints_at(&mut app, 100);
-    assert!(h.ends_with("· ram 56% · gpu 75% · swap 1.2G"), "{h}");
 }
 
 #[test]
@@ -443,18 +519,18 @@ fn the_loaded_models_size_goes_after_its_name() {
     // not loaded: no size, and its absence is what tells it apart
     app.loaded = LoadedState::NotLoaded;
     let h = hints_at(&mut app, 130);
-    assert!(h.ends_with("m · cpu 34% ▲34 · ram 56% ▲56"), "{h}");
+    assert!(h.ends_with(" m"), "{h}");
     // loaded and fully on the GPU: the size, with no split
     app.loaded = model(13_000_000_000, 13_000_000_000);
     let h = hints_at(&mut app, 130);
-    assert!(h.ends_with("m · 12.1G · cpu 34% ▲34 · ram 56% ▲56"), "{h}");
+    assert!(h.ends_with("m · 12.1G"), "{h}");
     // partly off the GPU: it is flagged, because generation crawls
     app.loaded = model(13_000_000_000, 9_100_000_000);
     let h = hints_at(&mut app, 130);
-    assert!(h.contains("m · 12.1G · 30% cpu · cpu 34%"), "{h}");
-    // on a narrow terminal the size drops off along with the peaks
+    assert!(h.ends_with("m · 12.1G · 30% cpu"), "{h}");
+    // on a narrow terminal the size drops off
     let h = hints_at(&mut app, 100);
-    assert!(h.ends_with("m · cpu 34% · ram 56%"), "{h}");
+    assert!(h.ends_with(" m"), "{h}");
 }
 
 #[test]
@@ -466,18 +542,19 @@ fn the_selection_is_highlighted() {
     app.items.push(Item::Info("one two four".into()));
     let mut term = Terminal::new(TestBackend::new(60, 14)).unwrap();
     term.draw(|f| view(&mut app, f)).unwrap();
-    // row 6 = "one two four"; select "two"
+    // a blank row, then row 1 = "one two four"; select "two". On screen it
+    // is row 2, under the top row
     app.selection = Some(Selection {
-        anchor: (6, 4),
-        head: (6, 6),
+        anchor: (1, 4),
+        head: (1, 6),
         dragging: false,
     });
     term.draw(|f| view(&mut app, f)).unwrap();
     let buf = term.backend().buffer();
-    assert_eq!(buf[(4, 6)].bg, app.theme.moon);
-    assert_eq!(buf[(6, 6)].bg, app.theme.moon);
-    assert_ne!(buf[(7, 6)].bg, app.theme.moon);
-    assert_ne!(buf[(3, 6)].bg, app.theme.moon);
+    assert_eq!(buf[(4, 2)].bg, app.theme.moon);
+    assert_eq!(buf[(6, 2)].bg, app.theme.moon);
+    assert_ne!(buf[(7, 2)].bg, app.theme.moon);
+    assert_ne!(buf[(3, 2)].bg, app.theme.moon);
     assert_eq!(app.selection_text(), "two");
 }
 
@@ -730,7 +807,6 @@ fn suggestions_above_the_box() {
     assert!(s.contains("/system [text]"));
     assert!(s.contains("/sessions "));
     assert!(!s.contains("/quit"));
-    assert!(s.contains("tab or enter to complete"));
     // titled and counted like a panel, and with no surface under it
     assert!(s.contains(" Commands"), "{s}");
     assert!(s.contains("3 commands"), "{s}");
@@ -986,13 +1062,7 @@ fn the_approval_panel_and_the_edits_marker() {
     let s = screen(&term);
     // the sign sits on the bottom row, on the left, listing what is on; the
     // welcome banner does not repeat it
-    assert!(
-        s[23]
-            .trim_start()
-            .starts_with("⏵⏵ default · Read · Edit · Create"),
-        "{}",
-        s[23]
-    );
+    assert!(s[23].trim_start().starts_with("⏵⏵ default "), "{}", s[23]);
     assert!(s[23].trim_end().ends_with("no model"), "{}", s[23]);
     assert!(!s.iter().any(|l| l.contains("✎ edits on")), "{s:?}");
 
@@ -1001,6 +1071,7 @@ fn the_approval_panel_and_the_edits_marker() {
     let edit = PendingEdit {
         tool: Tool::EditFile,
         path: "src/a.rs".into(),
+        to: None,
         before: before.into(),
         after: after.into(),
         eol: Eol::Lf,
@@ -1034,19 +1105,63 @@ fn the_approval_panel_and_the_edits_marker() {
     );
     assert!(s[23].contains("esc cancel turn"), "{}", s[23]);
     let buf = term.backend().buffer();
-    // the removed line in `alert`, the added one in `ok`
-    let row = |needle: &str| s.iter().position(|l| l.contains(needle)).unwrap() as u16;
-    let col = |line: &str, needle: &str| line.find(needle).unwrap() as u16;
+    // one number, the file's line, then the sign: the removed row on
+    // `alert-bg` with its sign in `alert`, the added one on `ok-bg` with its
+    // sign in `ok`, both out to the right edge; the context row has no
+    // background
+    let row = |needle: &str| s.iter().position(|l| l.contains(needle)).unwrap();
     let minus = row("hi();");
-    assert_eq!(
-        buf[(col(&s[minus as usize], "hi();"), minus)].fg,
-        app.theme.alert
-    );
     let plus = row("bye();");
-    assert_eq!(
-        buf[(col(&s[plus as usize], "bye();"), plus)].fg,
-        app.theme.ok
+    assert!(
+        s[minus].trim_start().starts_with("2 -     hi();"),
+        "{}",
+        s[minus]
     );
+    assert!(
+        s[plus].trim_start().starts_with("2 +     bye();"),
+        "{}",
+        s[plus]
+    );
+    let at = |line: usize, needle: &str| (s[line].find(needle).unwrap() as u16, line as u16);
+    assert_eq!(buf[at(minus, "-")].fg, app.theme.alert);
+    assert_eq!(buf[at(minus, "hi();")].bg, app.theme.alert_bg);
+    assert_eq!(buf[at(plus, "+")].fg, app.theme.ok);
+    assert_eq!(buf[at(plus, "bye();")].bg, app.theme.ok_bg);
+    assert_eq!(buf[(85, minus as u16)].bg, app.theme.alert_bg);
+    // the code keeps its colors: `fn` is a keyword, in `moon-soft`
+    let context = row("fn main()");
+    assert_eq!(buf[at(context, "fn")].fg, app.theme.moon_soft);
+    assert_ne!(buf[at(context, "fn")].bg, app.theme.ok_bg);
+}
+
+#[test]
+fn a_long_applied_diff_is_cut_in_the_conversation() {
+    use moon_agent::{tools, Outcome, Step, Tool};
+    let mut app = app();
+    app.loading = false;
+    app.items.clear();
+    let before: String = (1..=40).map(|i| format!("old {i}\n")).collect();
+    let after: String = (1..=40).map(|i| format!("new {i}\n")).collect();
+    let diff = tools::diff(&before, &after);
+    app.push_item(Item::Message(Message::new(Role::User, "rewrite it")));
+    app.push_item(Item::Step(Step {
+        tool: Tool::WriteFile,
+        path: "notes.txt".into(),
+        command: None,
+        added: diff.added,
+        removed: diff.removed,
+        outcome: Outcome::Applied,
+        diff: Some(diff),
+    }));
+    let lines: Vec<String> = app
+        .visible_lines(80, 60)
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    let at = lines.iter().position(|l| l.contains("✎ write")).unwrap();
+    // 30 rows of the 80, then how many are left
+    assert!(lines[at + 1].starts_with("       1 - old 1"), "{lines:?}");
+    assert_eq!(lines[at + 31].trim(), "… 50 more lines", "{lines:?}");
 }
 
 #[test]
@@ -1058,6 +1173,7 @@ fn the_run_approval_panel() {
     app.tools_on = true;
     let exec = Exec {
         id: "git commit",
+        name: "git commit".into(),
         program: "/usr/bin/git".into(),
         args: vec!["commit".into(), "-m".into(), "fix: a".into()],
         dir: "/p/src".into(),

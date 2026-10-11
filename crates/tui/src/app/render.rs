@@ -1,4 +1,4 @@
-//! Rendering the conversation: cached lines, scrolling, mouse selection, the welcome block.
+//! Rendering the conversation: cached lines, scrolling, mouse selection.
 
 use super::*;
 
@@ -156,7 +156,6 @@ impl App {
         count: usize,
     ) -> Vec<Line<'static>> {
         self.ensure_cache(width);
-        let welcome = self.welcome_lines();
         let mut out = Vec::with_capacity(count);
         let mut pos = 0usize;
         let mut take = |lines: &[Line<'static>], out: &mut Vec<Line<'static>>| {
@@ -170,7 +169,6 @@ impl App {
                 pos += 1;
             }
         };
-        take(&welcome, &mut out);
         let blank = [Line::from("")];
         // each request opens a turn with a full-width divider in `night-line`
         let rule = [Line::from(Span::styled(
@@ -222,90 +220,31 @@ impl App {
                 .as_ref()
                 .is_some_and(|r| r.width == width && r.key == key);
             if !ok {
-                let lines = item_lines(&self.items[i], &self.md, &self.theme, width as usize);
+                let lines = item_lines(
+                    &self.items[i],
+                    &self.md,
+                    &self.theme,
+                    width as usize,
+                    self.show_thinking,
+                );
                 self.cache[i] = Some(Rendered { width, key, lines });
             }
         }
     }
 
-    pub fn welcome_lines(&self) -> Vec<Line<'static>> {
-        let t = &self.theme;
-        let cur_prov = self
-            .current
-            .as_ref()
-            .and_then(|c| self.providers.iter().find(|p| p.id == c.provider));
-        let model_line: Vec<Span<'static>> = match (&self.current, cur_prov) {
-            (Some(c), Some(p)) => match &p.health {
-                Some(Err(e)) => vec![Span::styled(
-                    format!(
-                        "✗ {} is not responding at {}: {}",
-                        c.provider, p.base_url, e
-                    ),
-                    t.text(),
-                )],
-                _ => {
-                    let ctx = self
-                        .ctx_window()
-                        .map(|n| format!(" (ctx {})", fmt_k(n)))
-                        .unwrap_or_default();
-                    vec![Span::styled(
-                        format!("{}{ctx} · {} · {}", c.model, c.provider, p.base_url),
-                        t.muted(),
-                    )]
-                }
-            },
-            (Some(c), None) => vec![Span::styled(
-                format!("✗ provider {} unavailable", c.provider),
-                t.text(),
-            )],
-            (None, _) if self.loading => vec![Span::styled("checking providers…", t.muted())],
-            (None, _) => vec![Span::styled("no model · /model to pick one", t.muted())],
-        };
-        let name_line = vec![
-            Span::styled("moon", t.accent_bold()),
-            Span::styled(format!(" v{}", self.version), t.muted()),
-        ];
-        let update_line = self.update_available.as_ref().map(|v| {
-            vec![
-                Span::styled(format!("↑ v{v} available"), t.accent()),
-                Span::styled(" · run `moon update`", t.muted()),
-            ]
-        });
-        let cwd_line = vec![Span::styled(self.cwd.clone(), t.muted())];
-        let config_line = self.default_config.then(|| {
-            vec![Span::styled(
-                "default configuration · `moon config init` writes the file",
-                t.muted(),
-            )]
-        });
-        let with_logo = |rows: Vec<String>, right: Vec<Vec<Span<'static>>>, indent: usize| {
-            let mut lines: Vec<Line<'static>> = Vec::new();
-            let mut right = right.into_iter();
-            let pad = " ".repeat(LOGO_PAD);
-            for row in rows {
-                let mut v = vec![
-                    Span::styled(format!("{pad}{row}"), t.accent()),
-                    Span::raw("   "),
-                ];
-                v.extend(right.next().unwrap_or_default());
-                lines.push(Line::from(v));
-            }
-            for spans in right {
-                let mut v = vec![Span::raw(" ".repeat(LOGO_PAD + indent + 3))];
-                v.extend(spans);
-                lines.push(Line::from(v));
-            }
-            lines
-        };
-        let mut right = vec![name_line];
-        right.extend(update_line);
-        right.push(model_line);
-        right.push(cwd_line);
-        right.extend(config_line);
-        // a blank row over the logo: flush against the top edge it felt cramped
-        let mut lines = vec![Line::from("")];
-        lines.extend(with_logo(logo_rows(), right, LOGO_COLS));
-        lines
+    /// For `/version` and the `Version` row of `/help`: moon's version and,
+    /// when the daily check found one, the newer one and how to get it.
+    pub fn version_note(&self) -> String {
+        match &self.update_available {
+            Some(v) => format!(
+                "moon v{} · ↑ v{v} available · run `moon update`",
+                self.version
+            ),
+            None => format!(
+                "moon v{} · `moon update` checks for a newer one",
+                self.version
+            ),
+        }
     }
 
     /// For the `Config` row of `/help`: where it lives, or where `moon
@@ -342,9 +281,8 @@ impl App {
     /// and the auto-follow.
     pub fn visible_lines(&mut self, width: u16, height: u16) -> Vec<Line<'static>> {
         self.ensure_cache(width);
-        let welcome = self.welcome_lines();
         let h = height as usize;
-        let mut total = welcome.len();
+        let mut total = 0;
         for i in self.view_from..self.items.len() {
             if hidden(&self.items[i]) {
                 continue;
@@ -379,7 +317,6 @@ impl App {
                 pos += 1;
             }
         };
-        take(&welcome, &mut out);
         let blank = [Line::from("")];
         // each request opens a turn with a full-width divider in `night-line`
         let rule = [Line::from(Span::styled(
@@ -471,6 +408,7 @@ pub(super) fn item_key(item: &Item) -> usize {
         }
         // a step never changes once it is in
         Item::Step(s) => s.path.len() + 1,
+        Item::Tools(tools) => tools.iter().map(|(n, c)| n.len() + c).sum(),
     }
 }
 
@@ -479,6 +417,7 @@ pub(super) fn item_lines(
     md: &Renderer,
     t: &Theme,
     width: usize,
+    show_thinking: bool,
 ) -> Vec<Line<'static>> {
     let width = width.max(10);
     match item {
@@ -515,11 +454,27 @@ pub(super) fn item_lines(
             }
             Role::Assistant => {
                 let mut out = Vec::new();
+                // the reasoning some models send before the reply: shown in
+                // grey over it, or folded into one line that says how long
+                // it was and how to open it
                 if let Some(th) = &m.thinking {
-                    out.push(Line::from(Span::styled(
-                        format!("▸ hidden reasoning ({} chars)", th.chars().count()),
-                        t.muted(),
-                    )));
+                    let n = th.chars().count();
+                    if show_thinking {
+                        out.push(Line::from(Span::styled(
+                            format!("▾ reasoning ({n} chars)"),
+                            t.muted(),
+                        )));
+                        for l in th.lines() {
+                            let line = Line::from(Span::styled(l.to_string(), t.muted()));
+                            out.extend(wrap_line(&line, width));
+                        }
+                        out.push(Line::from(""));
+                    } else {
+                        out.push(Line::from(Span::styled(
+                            format!("▸ hidden reasoning ({n} chars) · /thinking shows it"),
+                            t.muted(),
+                        )));
+                    }
                 }
                 out.extend(md.render(&m.content, width, t));
                 if m.partial {
@@ -546,9 +501,55 @@ pub(super) fn item_lines(
             .lines()
             .flat_map(|l| wrap_line(&Line::from(Span::styled(l.to_string(), t.muted())), width))
             .collect(),
-        Item::Step(s) => step_line(s, t, width),
+        Item::Step(s) => {
+            let mut out = step_line(s, t, width);
+            if let Some(d) = &s.diff {
+                out.extend(step_diff(s, d, md, t, width));
+            }
+            out
+        }
         Item::Command { input, output } => command_lines(input, output, t, width),
+        Item::Tools(tools) => tools_lines(tools, t, width),
     }
+}
+
+/// What the model used in the turn, under the reply once it ends: a rule
+/// with the number of calls, then the tools one after another with how many
+/// times, `─── 7 tools ── read ×3 · git diff ×2 · edit ×1`. What does not
+/// fit goes on the next line, under the first tool.
+fn tools_lines(tools: &[(String, usize)], t: &Theme, max: usize) -> Vec<Line<'static>> {
+    use crate::wrap::width;
+    let total: usize = tools.iter().map(|(_, n)| n).sum();
+    let head = format!("─── {total} tool{} ── ", if total == 1 { "" } else { "s" });
+    let indent = width(&head);
+    let mut out = Vec::new();
+    let mut spans = vec![
+        Span::styled("─── ", t.line()),
+        Span::styled(
+            format!("{total} tool{}", if total == 1 { "" } else { "s" }),
+            t.soft_bold(),
+        ),
+        Span::styled(" ── ", t.line()),
+    ];
+    let mut used = indent;
+    for (i, (name, n)) in tools.iter().enumerate() {
+        let count = format!(" ×{n}");
+        let chip = width(name) + width(&count);
+        let sep = if i == 0 { 0 } else { 3 };
+        if i > 0 && used + sep + chip > max {
+            out.push(Line::from(std::mem::take(&mut spans)));
+            spans.push(Span::raw(" ".repeat(indent)));
+            used = indent;
+        } else if i > 0 {
+            spans.push(Span::styled(" · ", t.muted()));
+            used += sep;
+        }
+        spans.push(Span::styled(name.clone(), t.muted()));
+        spans.push(Span::styled(count, t.soft()));
+        used += chip;
+    }
+    out.push(Line::from(spans));
+    out
 }
 
 /// `▌ /model` with the bar in `moon`, then the answer hanging from `⎿`.
@@ -579,6 +580,42 @@ fn command_lines(input: &str, output: &[String], t: &Theme, width: usize) -> Vec
     out
 }
 
+/// Rows of an applied diff the conversation shows under its step; past
+/// them, a line says how many more there are.
+const STEP_DIFF_ROWS: usize = 30;
+
+/// The diff of an applied edit, under its step line and in line with its
+/// text, as the approval panel showed it.
+fn step_diff(
+    s: &moon_agent::Step,
+    d: &moon_agent::Diff,
+    md: &Renderer,
+    t: &Theme,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let mut rows = crate::view::diff::lines(t, md, &s.path, d, width - ANSWER_PAD.len());
+    let more = rows.len().saturating_sub(STEP_DIFF_ROWS);
+    rows.truncate(STEP_DIFF_ROWS);
+    let mut out: Vec<Line<'static>> = rows
+        .into_iter()
+        .map(|l| {
+            let mut spans = vec![Span::raw(ANSWER_PAD)];
+            spans.extend(l.spans);
+            Line::from(spans)
+        })
+        .collect();
+    if more > 0 {
+        out.push(Line::from(Span::styled(
+            format!(
+                "{ANSWER_PAD}… {more} more line{}",
+                if more == 1 { "" } else { "s" }
+            ),
+            t.muted(),
+        )));
+    }
+    out
+}
+
 /// One line per tool call, hanging from `⎿`: the verb and the path, `✎` in
 /// front of a write and `✗` of a failure, then the line counts of an edit and
 /// how it ended, or why it failed.
@@ -595,7 +632,7 @@ fn step_line(s: &moon_agent::Step, t: &Theme, width: usize) -> Vec<Line<'static>
         format!("{:<5} {}", s.tool.verb(), s.path),
         t.muted(),
     ));
-    if s.tool.writes() && !failed {
+    if s.tool.writes() && s.tool != moon_agent::Tool::MoveFile && !failed {
         spans.push(Span::styled(
             format!("  +{} −{}", s.added, s.removed),
             t.muted(),

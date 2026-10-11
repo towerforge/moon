@@ -15,7 +15,7 @@ use moon_core::{Permission, ToolSpec};
 
 use crate::tools::catalog::Policy;
 use crate::tools::{run_command, Tool};
-use moon_core::config::ids::{CREATE_FILES, EDIT_FILES};
+use moon_core::config::ids::{CREATE_FILES, DELETE_FILES, EDIT_FILES, MOVE_FILES};
 
 mod editor;
 mod file;
@@ -119,7 +119,7 @@ impl Agent {
     /// The agent a policy calls for: the editor when it may change files,
     /// the reader otherwise, either one with the commands the policy has.
     pub fn for_policy(policy: Policy) -> Self {
-        let base = if policy.edits() || policy.creates() {
+        let base = if policy.changes_files() {
             editor()
         } else {
             reader()
@@ -140,7 +140,13 @@ impl Agent {
         if self.policy.creates() {
             out.push(Tool::WriteFile);
         }
-        if !self.policy.commands().is_empty() {
+        if self.policy.moves() {
+            out.push(Tool::MoveFile);
+        }
+        if self.policy.deletes() {
+            out.push(Tool::DeleteFile);
+        }
+        if self.policy.runs() {
             out.push(Tool::RunCommand);
         }
         out
@@ -175,10 +181,14 @@ impl Agent {
             Tool::ReadFile | Tool::ListDir => moon_core::config::ids::READ_FILES,
             Tool::EditFile => moon_core::config::ids::EDIT_FILES,
             Tool::WriteFile => moon_core::config::ids::CREATE_FILES,
+            Tool::MoveFile => moon_core::config::ids::MOVE_FILES,
+            Tool::DeleteFile => moon_core::config::ids::DELETE_FILES,
             Tool::RunCommand => {
                 for e in self.policy.commands() {
                     self.policy.set(e.id, Permission::Off);
                 }
+                self.policy
+                    .set(moon_core::config::ids::OTHER_PROGRAMS, Permission::Off);
                 return self;
             }
         };
@@ -212,6 +222,8 @@ impl Agent {
         let writes = [
             (self.policy.get(EDIT_FILES), "Edits to existing files"),
             (self.policy.get(CREATE_FILES), "New files"),
+            (self.policy.get(MOVE_FILES), "Moves"),
+            (self.policy.get(DELETE_FILES), "Deletions"),
         ];
         let notes: Vec<String> = writes
             .iter()
@@ -230,8 +242,33 @@ impl Agent {
             out.push_str(&notes.join(" "));
             out.push_str("\n\n");
         }
+        // renaming and deleting, or saying they are not there
+        if self.policy.changes_files() {
+            let mut lines = Vec::new();
+            if self.policy.moves() {
+                lines.push(
+                    "- To move or rename a file or a folder, call move_file with `from` and `to`; \
+                     it never replaces something that exists. Then fix what refers to the old \
+                     path.",
+                );
+            }
+            if self.policy.deletes() {
+                lines.push(
+                    "- To delete a file, read it first, then call delete_file. A folder goes only \
+                     once it is empty: delete what it holds first.",
+                );
+            }
+            match (self.policy.moves(), self.policy.deletes()) {
+                (false, false) => lines.push("- You cannot delete or rename files."),
+                (true, false) => lines.push("- You cannot delete files."),
+                (false, true) => lines.push("- You cannot move or rename files."),
+                (true, true) => {}
+            }
+            out.push_str(&lines.join("\n"));
+            out.push_str("\n\n");
+        }
         let commands = self.policy.commands();
-        if commands.is_empty() {
+        if !self.policy.runs() {
             out.push_str(
                 "You have no shell: you cannot run commands, tests or builds. When a check would \
                  need one, say what to run and let the user run it.",
@@ -239,13 +276,32 @@ impl Agent {
             return out;
         }
         let names: Vec<&str> = commands.iter().map(|e| e.id).collect();
-        out.push_str(&format!(
-            "# Running commands\n\nYou can run these commands, and only these, with run_command: \
-             {}. Pass the command as written here in `command`, with any arguments after it or in \
-             `args`, one per item. No shell: no pipes, no redirections, no `&&`, no `cd`. \
-             Arguments are relative to the project root and stay inside it.",
-            names.join(", ")
-        ));
+        out.push_str("# Running commands\n\n");
+        if !names.is_empty() {
+            let only = if self.policy.others() {
+                ""
+            } else {
+                ", and only these"
+            };
+            out.push_str(&format!(
+                "You can run these commands{only}, with run_command: {}. Pass the command as \
+                 written here in `command`, with any arguments after it or in `args`, one per \
+                 item. ",
+                names.join(", ")
+            ));
+        }
+        if self.policy.others() {
+            out.push_str(
+                "You can also call any other program of this machine with run_command, by its \
+                 name in `command` and its arguments in `args`; each such call waits for the \
+                 user's ok, so ask for one only when the listed commands will not do. Shells \
+                 and programs that run another program (sh, bash, env, xargs, sudo) are refused. ",
+            );
+        }
+        out.push_str(
+            "No shell: no pipes, no redirections, no `&&`, no `cd`. Arguments are relative to \
+             the project root and stay inside it.",
+        );
         let asks: Vec<&str> = commands
             .iter()
             .filter(|e| self.policy.get(e.id) == Permission::Ask)
@@ -273,6 +329,21 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use moon_core::config::ids::OTHER_PROGRAMS;
+
+    #[test]
+    fn other_programs_alone_give_run_command_and_say_so() {
+        let a = Agent::for_policy(Policy::from_pairs([(OTHER_PROGRAMS, Permission::Ask)]));
+        assert!(a.has(Tool::RunCommand));
+        let prompt = a.system_prompt();
+        assert!(prompt.contains("any other program"), "{prompt}");
+        assert!(!prompt.contains("You have no shell"), "{prompt}");
+        assert!(!prompt.contains("and only these"), "{prompt}");
+        // taking run_command away takes it too
+        let a = a.without(Tool::RunCommand);
+        assert!(!a.has(Tool::RunCommand));
+        assert!(a.system_prompt().contains("You have no shell"));
+    }
 
     fn user() -> Policy {
         Policy::from_pairs([

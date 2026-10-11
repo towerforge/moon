@@ -13,13 +13,13 @@
 use std::collections::VecDeque;
 use std::fmt;
 
-use moon_core::config::ids::{CREATE_FILES, EDIT_FILES};
+use moon_core::config::ids::{CREATE_FILES, DELETE_FILES, EDIT_FILES, MOVE_FILES};
 use moon_core::{Message, Permission, ToolCall, ToolSpec};
 
 use crate::agents::Agent;
 use crate::sandbox::Sandbox;
 use crate::tools::{
-    self, path_of, Exec, Output, Pending, PendingEdit, Seen, SeenFiles, Tool, ToolError,
+    self, path_of, Diff, Exec, Output, Pending, PendingEdit, Seen, SeenFiles, Tool, ToolError,
 };
 
 mod fallback;
@@ -108,9 +108,15 @@ pub struct Step {
     pub tool: Tool,
     /// The file, or the command line for a `run`.
     pub path: String,
+    /// For a `run`, what the user was asked to run: the catalogue id,
+    /// `git diff`, or the program called.
+    pub command: Option<String>,
     pub added: usize,
     pub removed: usize,
     pub outcome: Outcome,
+    /// What an edit, a new file or a delete changed, once applied, for the
+    /// conversation to show it; `None` for the rest.
+    pub diff: Option<Diff>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,8 +333,9 @@ impl Harness {
         out
     }
 
-    /// The user's word on an edit: written, or left alone, and the model
-    /// told either way.
+    /// The user's word on a change: done, or left alone, and the model told
+    /// either way. What was read follows the file: written, it carries its
+    /// new hash; moved, it is known at its new path; deleted, it is gone.
     fn settle_edit(
         &mut self,
         call: ToolCall,
@@ -337,20 +344,32 @@ impl Harness {
         out: &mut Vec<Command>,
     ) {
         let (text, outcome) = match v {
-            Verdict::Apply => match edit.apply(&self.sandbox) {
+            Verdict::Apply => match edit.carry_out(&self.sandbox) {
                 Ok(hash) => {
-                    self.seen.insert(
-                        edit.path.clone(),
-                        Seen {
-                            hash,
-                            eol: edit.eol,
-                            bom: edit.bom,
-                        },
-                    );
-                    (
-                        format!("applied: `{}` ({})", edit.path, edit.counts()),
-                        Outcome::Applied,
-                    )
+                    let text = match (edit.tool, hash) {
+                        (Tool::MoveFile, _) => {
+                            let to = edit.to.clone().unwrap_or_default();
+                            self.follow_move(&edit.path, &to);
+                            format!("applied: moved `{}` to `{to}`", edit.path)
+                        }
+                        (Tool::DeleteFile, _) => {
+                            self.seen.remove(&edit.path);
+                            format!("applied: deleted `{}`", edit.path)
+                        }
+                        (_, Some(hash)) => {
+                            self.seen.insert(
+                                edit.path.clone(),
+                                Seen {
+                                    hash,
+                                    eol: edit.eol,
+                                    bom: edit.bom,
+                                },
+                            );
+                            format!("applied: `{}` ({})", edit.path, edit.counts())
+                        }
+                        (_, None) => format!("applied: `{}`", edit.path),
+                    };
+                    (text, Outcome::Applied)
                 }
                 Err(e) => (format!("not applied: {e}"), Outcome::Failed(e.to_string())),
             },
@@ -360,12 +379,16 @@ impl Harness {
             ),
         };
         self.results.push(result(&call, text));
+        let diff =
+            (outcome == Outcome::Applied && !edit.diff.lines.is_empty()).then(|| edit.diff.clone());
         out.push(Command::Step(Step {
             tool: edit.tool,
-            path: edit.path.clone(),
+            path: edit.subject(),
             added: edit.diff.added,
             removed: edit.diff.removed,
             outcome,
+            command: None,
+            diff,
         }));
     }
 
@@ -421,6 +444,16 @@ impl Harness {
                         },
                     )
                 }
+                Tool::MoveFile => tools::move_file::prepare(
+                    &self.sandbox,
+                    self.agent.policy.creates(),
+                    &call.arguments,
+                )
+                .map(|e| self.settle_or_ask(e)),
+                Tool::DeleteFile => {
+                    tools::delete_file::prepare(&self.sandbox, &self.seen, &call.arguments)
+                        .map(|e| self.settle_or_ask(e))
+                }
                 Tool::RunCommand => {
                     tools::run_command::prepare(&self.sandbox, &self.agent.policy, &call.arguments)
                         .map(|exec| {
@@ -450,6 +483,8 @@ impl Harness {
                     added: 0,
                     removed: 0,
                     outcome: Outcome::Done,
+                    command: None,
+                    diff: None,
                 })),
                 Err(e) => {
                     if matches!(e, ToolError::Denied(_)) {
@@ -468,6 +503,8 @@ impl Harness {
                         added: 0,
                         removed: 0,
                         outcome: Outcome::Failed(e.to_string()),
+                        command: None,
+                        diff: None,
                     }));
                     if self.rejections >= self.limits.rejections {
                         let mut results = std::mem::take(&mut self.results);
@@ -487,19 +524,37 @@ impl Harness {
         out.push(Command::Continue(std::mem::take(&mut self.results)));
     }
 
-    /// A write the user chose to see first, or to let through: replacing a
+    /// A change the user chose to see first, or to let through: replacing a
     /// file that exists goes by the permission on editing, a new one by the
-    /// permission on creating.
+    /// permission on creating, a move and a delete by their own.
     fn settle_or_ask(&self, edit: PendingEdit) -> Next {
-        let id = if edit.expect.is_some() {
-            EDIT_FILES
-        } else {
-            CREATE_FILES
+        let id = match edit.tool {
+            Tool::MoveFile => MOVE_FILES,
+            Tool::DeleteFile => DELETE_FILES,
+            _ if edit.expect.is_some() => EDIT_FILES,
+            _ => CREATE_FILES,
         };
         if self.agent.policy.get(id) == Permission::Allow {
             Next::Apply(edit)
         } else {
             Next::Ask(Pending::Edit(edit))
+        }
+    }
+
+    /// What was read under `from`, the file or everything in the folder,
+    /// is known under `to` now: the bytes did not change.
+    fn follow_move(&mut self, from: &str, to: &str) {
+        let inside = format!("{from}/");
+        let moved: Vec<String> = self
+            .seen
+            .keys()
+            .filter(|k| k.as_str() == from || k.starts_with(&inside))
+            .cloned()
+            .collect();
+        for k in moved {
+            if let Some(s) = self.seen.remove(&k) {
+                self.seen.insert(format!("{to}{}", &k[from.len()..]), s);
+            }
         }
     }
 
@@ -521,6 +576,8 @@ fn run_step(exec: &Exec, outcome: Outcome) -> Step {
         added: 0,
         removed: 0,
         outcome,
+        command: Some(exec.name.clone()),
+        diff: None,
     }
 }
 

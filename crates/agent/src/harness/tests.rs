@@ -436,3 +436,129 @@ fn an_edit_allowed_without_asking_is_written_as_it_comes() {
         "whole\n"
     );
 }
+
+/// The editor with moving and deleting on, at `perm`.
+fn changer(perm: Permission) -> Agent {
+    let mut policy = editor().policy;
+    policy.set(MOVE_FILES, perm);
+    policy.set(DELETE_FILES, perm);
+    Agent::for_policy(policy)
+}
+
+#[test]
+fn a_move_is_shown_and_what_was_read_follows_it() {
+    let (dir, mut h) = harness(Limits::default());
+    h.set_agent(changer(Permission::Ask));
+    h.begin_turn();
+    h.feed(Event::ModelDone(vec![read("src/a.rs")]));
+    let mv = call("move_file", json!({"from": "src/a.rs", "to": "src/b.rs"}));
+    let cmds = h.feed(Event::ModelDone(vec![mv]));
+    let Some(Command::Ask(Pending::Edit(e))) = cmds.last() else {
+        panic!("expected Ask, got {cmds:?}")
+    };
+    assert_eq!(
+        (e.tool, e.subject()),
+        (Tool::MoveFile, "src/a.rs → src/b.rs".to_string())
+    );
+    assert!(dir.path().join("src/a.rs").exists());
+    let cmds = h.feed(Event::Verdict(Verdict::Apply));
+    assert!(matches!(&cmds[0], Command::Step(s)
+        if s.outcome == Outcome::Applied && s.path == "src/a.rs → src/b.rs"));
+    assert!(continued(&cmds)[0]
+        .content
+        .contains("moved `src/a.rs` to `src/b.rs`"));
+    assert!(!dir.path().join("src/a.rs").exists());
+    // the file is known where it is now: an edit there needs no new read
+    let cmds = h.feed(Event::ModelDone(vec![edit("src/b.rs", "two", "2")]));
+    assert!(matches!(cmds.last(), Some(Command::Ask(Pending::Edit(e))) if e.path == "src/b.rs"));
+}
+
+#[test]
+fn a_delete_needs_a_read_and_forgets_the_file() {
+    let (dir, mut h) = harness(Limits::default());
+    h.set_agent(changer(Permission::Ask));
+    h.begin_turn();
+    let del = || call("delete_file", json!({"path": "src/a.rs"}));
+    // not read yet: refused, and the file stays
+    let cmds = h.feed(Event::ModelDone(vec![del()]));
+    assert!(continued(&cmds)[0].content.contains("was not read"));
+    assert!(dir.path().join("src/a.rs").exists());
+    h.feed(Event::ModelDone(vec![read("src/a.rs")]));
+    let cmds = h.feed(Event::ModelDone(vec![del()]));
+    let Some(Command::Ask(Pending::Edit(e))) = cmds.last() else {
+        panic!("expected Ask, got {cmds:?}")
+    };
+    // the whole file, shown as removed
+    assert_eq!(
+        (e.tool, e.diff.removed, e.diff.added),
+        (Tool::DeleteFile, 2, 0)
+    );
+    // skipped: it stays
+    let cmds = h.feed(Event::Verdict(Verdict::Skip));
+    assert!(matches!(&cmds[0], Command::Step(s) if s.outcome == Outcome::Skipped));
+    assert!(dir.path().join("src/a.rs").exists());
+    h.feed(Event::ModelDone(vec![del()]));
+    let cmds = h.feed(Event::Verdict(Verdict::Apply));
+    assert!(continued(&cmds)[0].content.contains("deleted `src/a.rs`"));
+    assert!(!dir.path().join("src/a.rs").exists());
+    // and it is forgotten: a file made again there is a new one
+    let w = call(
+        "write_file",
+        json!({"path": "src/a.rs", "content": "new\n"}),
+    );
+    let cmds = h.feed(Event::ModelDone(vec![w]));
+    assert!(matches!(cmds.last(), Some(Command::Ask(Pending::Edit(e))) if e.expect.is_none()));
+}
+
+#[test]
+fn allow_moves_and_deletes_without_asking_and_off_offers_neither() {
+    let (dir, mut h) = harness(Limits::default());
+    h.set_agent(changer(Permission::Allow));
+    h.begin_turn();
+    h.feed(Event::ModelDone(vec![read("src/a.rs")]));
+    let cmds = h.feed(Event::ModelDone(vec![call(
+        "move_file",
+        json!({"from": "src/a.rs", "to": "src/c.rs"}),
+    )]));
+    assert!(matches!(&cmds[0], Command::Step(s) if s.outcome == Outcome::Applied));
+    let cmds = h.feed(Event::ModelDone(vec![call(
+        "delete_file",
+        json!({"path": "src/c.rs"}),
+    )]));
+    assert!(matches!(&cmds[0], Command::Step(s) if s.outcome == Outcome::Applied));
+    assert!(!dir.path().join("src/c.rs").exists());
+    // with both off the tools are not there, and the prompt says so
+    let a = editor();
+    assert!(!a.has(Tool::MoveFile) && !a.has(Tool::DeleteFile));
+    assert!(a
+        .system_prompt()
+        .contains("You cannot delete or rename files"));
+    let both = changer(Permission::Ask);
+    let prompt = both.system_prompt();
+    assert!(
+        prompt.contains("move_file") && prompt.contains("delete_file"),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("You cannot"), "{prompt}");
+}
+
+#[test]
+fn a_move_into_a_new_folder_needs_creating_on() {
+    let (dir, mut h) = harness(Limits::default());
+    let mut policy = crate::tools::catalog::Policy::from_pairs([
+        (moon_core::config::ids::READ_FILES, Permission::Allow),
+        (MOVE_FILES, Permission::Allow),
+    ]);
+    h.set_agent(Agent::for_policy(policy.clone()));
+    h.begin_turn();
+    let mv = || call("move_file", json!({"from": "src/a.rs", "to": "lib/a.rs"}));
+    let cmds = h.feed(Event::ModelDone(vec![mv()]));
+    assert!(continued(&cmds)[0]
+        .content
+        .contains("creating files is off"));
+    policy.set(CREATE_FILES, Permission::Ask);
+    h.set_agent(Agent::for_policy(policy));
+    let cmds = h.feed(Event::ModelDone(vec![mv()]));
+    assert!(matches!(&cmds[0], Command::Step(s) if s.outcome == Outcome::Applied));
+    assert!(dir.path().join("lib/a.rs").exists());
+}

@@ -1,4 +1,5 @@
 use super::*;
+use moon_core::config::ids::OTHER_PROGRAMS;
 
 #[test]
 fn the_catalogue_is_consistent() {
@@ -228,14 +229,178 @@ fn arguments_stay_inside_and_off_the_deny_list() {
     assert!(check_arg(wget, "--post-file=x").is_err());
     assert!(check_arg(wget, "-i").is_err());
     assert_eq!(check_arg(wget, "-q"), Ok(()));
+    // a URL fetches over http only: `file://` would read the machine
+    for bad in [
+        "file:///etc/passwd",
+        "FILE:///etc/passwd",
+        "file://localhost/etc/passwd",
+        "ftp://example.com/x",
+        "scp://host/etc/passwd",
+        "--url=file:///etc/passwd",
+    ] {
+        assert!(check_arg(curl, bad).is_err(), "{bad}");
+    }
+    assert!(check_arg(wget, "ftp://example.com/x").is_err());
+    assert_eq!(check_arg(curl, "HTTP://example.com"), Ok(()));
 }
 
 #[test]
-fn the_stack_is_in_sections_and_nothing_else_is() {
+fn a_path_behind_file_is_still_a_path() {
+    let cat = find("cat").unwrap();
+    for bad in [
+        "file:/etc/passwd",
+        "file:///etc/passwd",
+        "file:~/.ssh/id_rsa",
+        "file:../x",
+        "file:file:/x",
+        "file://host/x",
+    ] {
+        assert!(check_arg(cat, bad).is_err(), "{bad}");
+    }
+    assert_eq!(check_arg(cat, "file:src/x"), Ok(()));
+    // the password sources of openssl are the same
+    let enc = find("openssl pkey").unwrap();
+    assert!(check_arg(enc, "file:/Users/x/.ssh/key").is_err());
+    assert_eq!(check_arg(enc, "file:keys/pass.txt"), Ok(()));
+    // multibyte first characters do not break the scheme check
+    assert_eq!(check_arg(cat, "ñandú.txt"), Ok(()));
+}
+
+#[test]
+fn models_go_by_subcommand_and_all_ask() {
+    let models: Vec<&Entry> = CATALOG
+        .iter()
+        .filter(|e| e.category == Category::Models)
+        .collect();
+    assert!(!models.is_empty());
+    for e in &models {
+        assert_eq!(e.on, Permission::Ask, "{}", e.id);
+        let section = if e.program() == "ollama" {
+            Section::Ollama
+        } else {
+            Section::OpenAi
+        };
+        assert_eq!(e.section, Some(section), "{}", e.id);
+    }
+    // what blocks, uploads or spends on its own is not in the catalogue
+    for id in [
+        "ollama",
+        "openai",
+        "ollama serve",
+        "ollama push",
+        "ollama create",
+        "openai api files.create",
+        "openai api audio.transcriptions.create",
+        "openai api fine_tuning.jobs.create",
+        "openai tools",
+    ] {
+        assert!(find(id).is_none(), "{id}");
+    }
+    let chat = find("openai api chat.completions.create").unwrap();
+    for bad in ["-b", "--api-base=https://evil.example", "--proxy"] {
+        assert!(check_arg(chat, bad).is_err(), "{bad}");
+    }
+    assert_eq!(check_arg(chat, "-t"), Ok(()));
+    let pull = find("ollama pull").unwrap();
+    assert!(check_arg(pull, "--insecure").is_err());
+    assert_eq!(
+        check_arg(pull, "hf.co/unsloth/Qwen3-8B-GGUF:Q4_K_M"),
+        Ok(())
+    );
+    let mut p = Policy::default();
+    p.set("ollama rm", Permission::Ask);
+    let toks: Vec<String> = ["ollama", "rm", "llama3:8b"].map(String::from).into();
+    let (e, n) = match_call(&p, &toks).unwrap();
+    assert_eq!((e.id, n), ("ollama rm", 2));
+}
+
+#[test]
+fn openssl_goes_by_subcommand_and_loads_nothing_from_elsewhere() {
+    assert!(find("openssl").is_none());
+    assert!(find("openssl enc").is_none());
+    for id in [
+        "openssl rand",
+        "openssl dgst",
+        "openssl base64",
+        "openssl x509",
+        "openssl verify",
+        "shasum",
+        "sha256sum",
+        "uuidgen",
+    ] {
+        let e = find(id).unwrap();
+        assert_eq!(
+            (e.category, e.on),
+            (Category::Crypto, Permission::Allow),
+            "{id}"
+        );
+    }
+    for id in ["openssl pkey", "openssl genpkey", "openssl req", "htpasswd"] {
+        let e = find(id).unwrap();
+        assert_eq!(
+            (e.category, e.on),
+            (Category::Crypto, Permission::Ask),
+            "{id}"
+        );
+    }
+    let s_client = find("openssl s_client").unwrap();
+    assert_eq!(
+        (s_client.category, s_client.on),
+        (Category::Network, Permission::Ask)
+    );
+    for id in ["openssl rand", "openssl req", "openssl s_client"] {
+        let e = find(id).unwrap();
+        for bad in [
+            "-engine",
+            "-provider",
+            "-provider-path",
+            "-config",
+            "-writerand",
+        ] {
+            assert!(check_arg(e, bad).is_err(), "{id} {bad}");
+        }
+    }
+    let rand = find("openssl rand").unwrap();
+    assert_eq!(check_arg(rand, "-base64"), Ok(()));
+    assert_eq!(check_arg(rand, "12"), Ok(()));
+    // a key never goes out on stdout
+    assert_eq!(find("openssl genpkey").unwrap().needs, &["-out"][..]);
+}
+
+#[test]
+fn a_literal_flag_takes_a_value_that_is_not_a_path() {
+    let req = find("openssl req").unwrap();
+    let args = |s: &[&str]| s.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        check_args(
+            req,
+            &args(&[
+                "-x509",
+                "-nodes",
+                "-subj",
+                "/CN=localhost",
+                "-out",
+                "cert.pem"
+            ])
+        ),
+        Ok(())
+    );
+    // only the value right after it, and never elsewhere
+    assert!(check_args(req, &args(&["-subj", "/CN=x", "/etc/passwd"])).is_err());
+    assert!(check_args(req, &args(&["-out", "/tmp/cert.pem"])).is_err());
+    // and still without control characters
+    assert!(check_args(req, &args(&["-subj", "/CN=a\nb"])).is_err());
+    // other entries have no literal flags
+    let x509 = find("openssl x509").unwrap();
+    assert!(check_args(x509, &args(&["-subj", "/CN=x"])).is_err());
+}
+
+#[test]
+fn the_stack_and_models_are_in_sections_and_nothing_else_is() {
     for e in CATALOG {
         assert_eq!(
             e.section.is_some(),
-            e.category == Category::Stack,
+            matches!(e.category, Category::Stack | Category::Models),
             "{}",
             e.id
         );
@@ -253,7 +418,14 @@ fn the_stack_is_in_sections_and_nothing_else_is() {
             });
     assert_eq!(
         order,
-        [Section::Make, Section::Rust, Section::Node, Section::Python]
+        [
+            Section::Make,
+            Section::Rust,
+            Section::Node,
+            Section::Python,
+            Section::Ollama,
+            Section::OpenAi
+        ]
     );
     assert_eq!(find("make").unwrap().section, Some(Section::Make));
     assert_eq!(find("pnpm list").unwrap().section, Some(Section::Node));
@@ -277,7 +449,10 @@ fn the_docs_carry_the_catalogue_as_it_is() {
         assert!(table.contains(&format!("| `{}` |", e.id)), "{}", e.id);
     }
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/tools.md");
-    let docs = std::fs::read_to_string(&path).expect("docs/tools.md");
+    // a Windows checkout may bring the file with CRLF line endings
+    let docs = std::fs::read_to_string(&path)
+        .expect("docs/tools.md")
+        .replace("\r\n", "\n");
     let (start, end) = ("<!-- CATALOG:START -->\n", "<!-- CATALOG:END -->");
     let a = docs.find(start).expect("start marker") + start.len();
     let b = docs.find(end).expect("end marker");
@@ -305,5 +480,93 @@ fn resolving_finds_what_is_on_path_and_nothing_else() {
         let ls = resolve("ls", true).expect("ls on PATH");
         assert!(ls.is_absolute() && ls.ends_with("ls"));
         assert_eq!(find("ls").unwrap().resolve(), Some(ls));
+    }
+}
+
+#[test]
+fn other_programs_is_ask_or_off_and_turns_run_command_on() {
+    let mut p = Policy::default();
+    assert!(!p.runs());
+    p.set(OTHER_PROGRAMS, Permission::Allow);
+    assert_eq!(p.get(OTHER_PROGRAMS), Permission::Ask);
+    assert!(p.others() && p.runs());
+    // not a command of the catalogue: it matches nothing by itself
+    assert!(p.commands().is_empty());
+    let e = find(OTHER_PROGRAMS).unwrap();
+    assert_eq!(
+        (e.category, e.kind, e.on),
+        (Category::Editor, Kind::Other, Permission::Ask)
+    );
+    assert!(!e.is_command());
+    p.set(OTHER_PROGRAMS, Permission::Off);
+    assert!(!p.runs());
+}
+
+#[test]
+fn a_program_is_a_name_and_never_a_shell() {
+    for ok in ["rm", "rustup", "gh", "node", "python3.12"] {
+        assert_eq!(check_program(ok), Ok(()), "{ok}");
+    }
+    for bad in [
+        "sh",
+        "bash",
+        "zsh",
+        "Cmd.exe",
+        "powershell",
+        "pwsh",
+        "env",
+        "xargs",
+        "sudo",
+        "timeout",
+        "/bin/rm",
+        "./x",
+        "bin/x",
+        "..\\x",
+        "-rf",
+        "c:x",
+    ] {
+        assert!(check_program(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn a_call_outside_the_catalogue_takes_its_family_s_rules() {
+    let toks = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+    // the entry whose words open it, off or on
+    let (e, whole) = rules_for(&toks("docker compose up api")).unwrap();
+    assert_eq!((e.id, whole), ("docker compose up", true));
+    // or the one of the program that refuses least: `logs` refuses `-f`,
+    // which `docker compose -f other.yml run` needs
+    let (e, whole) = rules_for(&toks("docker compose -f x.yml run api")).unwrap();
+    assert!(!whole);
+    assert!(
+        e.deny.contains(&"--host") && !e.deny.contains(&"-f"),
+        "{}",
+        e.id
+    );
+    let (e, _) = rules_for(&toks("git push")).unwrap();
+    assert!(e.deny.contains(&"--exec-path"));
+    assert!(rules_for(&toks("rustup show")).is_none());
+    assert!(rules_for(&[]).is_none());
+}
+
+#[test]
+fn moving_and_deleting_need_reading_like_every_change() {
+    use moon_core::config::ids::{DELETE_FILES, MOVE_FILES};
+    let mut p = Policy::default();
+    p.set(MOVE_FILES, Permission::Ask);
+    assert!(p.reads() && p.moves() && p.changes_files());
+    p.set(DELETE_FILES, Permission::Allow);
+    assert!(p.deletes() && p.writes_unseen());
+    p.set(READ_FILES, Permission::Off);
+    assert!(!p.moves() && !p.deletes() && p.is_empty());
+    for id in [MOVE_FILES, DELETE_FILES] {
+        let e = find(id).unwrap();
+        assert_eq!(
+            (e.category, e.on),
+            (Category::Editor, Permission::Ask),
+            "{id}"
+        );
+        assert!(!e.is_command());
     }
 }

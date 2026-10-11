@@ -155,10 +155,7 @@ async fn commands_are_set_in_the_view_like_anything_else() {
     assert!(h.agent().has(moon_agent::Tool::RunCommand));
     assert!(!h.agent().has(moon_agent::Tool::ReadFile));
     assert_eq!(h.agent().name, "reader");
-    assert_eq!(
-        app.edit_mode_span().unwrap().content,
-        "⏵⏵ default · 2 commands"
-    );
+    assert_eq!(app.agent_span().content, "⏵⏵ default");
     let prompt = app.system_prompt_for(&[]).unwrap();
     assert!(prompt.contains("run_command: ls, git add"), "{prompt}");
     assert!(
@@ -177,7 +174,7 @@ async fn commands_are_set_in_the_view_like_anything_else() {
     assert!(!app.tools_on);
     assert!(app.tools_commands().is_empty());
     // everything off again: the marker falls back to naming the agent
-    assert_eq!(app.edit_mode_span().unwrap().content, "⏵ default · all off");
+    assert_eq!(app.agent_span().content, "⏵⏵ default");
 }
 
 #[cfg(unix)]
@@ -238,10 +235,7 @@ async fn a_turn_runs_a_command_and_reads_what_it_printed() {
         "{shown:?}"
     );
     assert_eq!(app.messages().next_back().unwrap().content, "there is a.rs");
-    assert_eq!(
-        app.edit_mode_span().unwrap().content,
-        "⏵⏵ default · Read · 1 command"
-    );
+    assert_eq!(app.agent_span().content, "⏵⏵ default");
 }
 
 #[cfg(unix)]
@@ -469,10 +463,7 @@ fn the_agent_files_are_the_truth_and_are_read_back() {
     assert_eq!(app.tools_commands(), vec!["cat", "git diff"]);
     assert_eq!(app.policy().get("cat"), Permission::Ask);
     assert_eq!(app.harness.as_ref().unwrap().limits().rounds, 5);
-    assert_eq!(
-        app.edit_mode_span().unwrap().content,
-        "⏵⏵ default · Read · Create · 2 commands"
-    );
+    assert_eq!(app.agent_span().content, "⏵⏵ default");
     // …and the short file was brought up to the catalogue on the way,
     // with what it set kept
     let synced = load(&file);

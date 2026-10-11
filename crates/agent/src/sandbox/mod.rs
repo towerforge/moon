@@ -69,6 +69,10 @@ pub enum Denied {
     Stale(String),
     #[error("`{0}` was not read in this conversation; read it before editing")]
     NotRead(String),
+    #[error("`{0}` already exists; moon does not move over anything")]
+    Exists(String),
+    #[error("`{0}` is a folder with something in it; delete what it holds first")]
+    NotEmpty(String),
     #[error("`{0}`: {1}")]
     Io(String, String),
 }
@@ -486,6 +490,149 @@ impl Sandbox {
             return Err(io(&loc.rel, e));
         }
         Ok(hash(&bytes))
+    }
+}
+
+impl Sandbox {
+    /// Where a move would go, checked: `from` exists, `to` does not, both
+    /// are inside the project and off the deny rules, neither goes through a
+    /// symlink, and a folder is moved only if nothing it holds is denied
+    /// where it is or where it would land. The folders on the way to `to`
+    /// must exist unless `make_dirs`. A rename that only changes case, on a
+    /// file system that ignores it, is not "over" anything.
+    pub fn check_move(
+        &self,
+        from: &str,
+        to: &str,
+        make_dirs: bool,
+    ) -> Result<(Located, Located), Denied> {
+        let a = self.resolve(from)?;
+        if !a.exists {
+            return Err(Denied::NotFound(a.rel));
+        }
+        if a.via_symlink {
+            return Err(Denied::Symlink(a.rel));
+        }
+        let b = self.resolve(to)?;
+        if b.via_symlink {
+            return Err(Denied::Symlink(b.rel));
+        }
+        if a.rel == b.rel {
+            return Err(Denied::Exists(b.rel));
+        }
+        if b.rel.starts_with(&format!("{}/", a.rel)) {
+            return Err(Denied::BadName(b.rel, "is inside the folder being moved"));
+        }
+        if b.exists {
+            let same = a.rel.eq_ignore_ascii_case(&b.rel)
+                && std::fs::canonicalize(&a.full).ok() == std::fs::canonicalize(&b.full).ok();
+            if !same {
+                return Err(Denied::Exists(b.rel));
+            }
+        }
+        let meta = std::fs::symlink_metadata(&a.full).map_err(|e| io(&a.rel, e))?;
+        if meta.is_dir() {
+            self.check_tree(&a, &b)?;
+        } else if !meta.is_file() {
+            return Err(Denied::NotAFile(a.rel));
+        }
+        if !make_dirs {
+            if let Some((parent, _)) = b.rel.rsplit_once('/') {
+                if !b.full.parent().is_some_and(Path::is_dir) {
+                    return Err(Denied::NotFound(parent.to_string()));
+                }
+            }
+        }
+        Ok((a, b))
+    }
+
+    /// Every path under the folder `a`, where it is and where it would be
+    /// under `b`, against the deny rules: moving `config/` must not carry a
+    /// `.env` along, nor land a file in `.github/workflows/`.
+    fn check_tree(&self, a: &Located, b: &Located) -> Result<(), Denied> {
+        let mut budget = FIND_BUDGET;
+        let mut stack = vec![(a.full.clone(), String::new())];
+        while let Some((dir, prefix)) = stack.pop() {
+            for e in std::fs::read_dir(&dir).map_err(|e| io(&a.rel, e))? {
+                let e = e.map_err(|e| io(&a.rel, e))?;
+                if budget == 0 {
+                    return Err(Denied::Io(
+                        a.rel.clone(),
+                        "too many files to move at once".into(),
+                    ));
+                }
+                budget -= 1;
+                let name = e.file_name().to_string_lossy().into_owned();
+                let sub = if prefix.is_empty() {
+                    name
+                } else {
+                    format!("{prefix}/{name}")
+                };
+                for base in [&a.rel, &b.rel] {
+                    let rel = format!("{base}/{sub}");
+                    let comps: Vec<String> = rel.split('/').map(String::from).collect();
+                    self.check_deny(&comps, &rel)?;
+                }
+                let ft = e.file_type().map_err(|e| io(&a.rel, e))?;
+                if ft.is_dir() {
+                    stack.push((e.path(), sub));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Moves it, once `check_move` passes again: the disk may have changed
+    /// while the user looked.
+    pub fn move_path(&self, from: &str, to: &str, make_dirs: bool) -> Result<(), Denied> {
+        let (a, b) = self.check_move(from, to, make_dirs)?;
+        if let Some(parent) = b.full.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| io(&b.rel, e))?;
+        }
+        rename(&a.full, &b.full).map_err(|e| io(&a.rel, e))
+    }
+
+    /// What a delete would remove, checked: a file that still carries the
+    /// hash it was read with, or a folder with nothing in it. Never through
+    /// a symlink, never the root, never what the deny rules keep.
+    pub fn check_remove(&self, raw: &str, expect: Option<u64>) -> Result<Located, Denied> {
+        let loc = self.resolve(raw)?;
+        if !loc.exists {
+            return Err(Denied::NotFound(loc.rel));
+        }
+        if loc.via_symlink {
+            return Err(Denied::Symlink(loc.rel));
+        }
+        let meta = std::fs::symlink_metadata(&loc.full).map_err(|e| io(&loc.rel, e))?;
+        if meta.is_dir() {
+            let mut rd = std::fs::read_dir(&loc.full).map_err(|e| io(&loc.rel, e))?;
+            if rd.next().is_some() {
+                return Err(Denied::NotEmpty(loc.rel));
+            }
+            return Ok(loc);
+        }
+        if !meta.is_file() {
+            return Err(Denied::NotAFile(loc.rel));
+        }
+        let Some(h) = expect else {
+            return Err(Denied::NotRead(loc.rel));
+        };
+        let current = std::fs::read(&loc.full).map_err(|e| io(&loc.rel, e))?;
+        if hash(&current) != h {
+            return Err(Denied::Stale(loc.rel));
+        }
+        Ok(loc)
+    }
+
+    /// Deletes it, once `check_remove` passes again.
+    pub fn remove(&self, raw: &str, expect: Option<u64>) -> Result<(), Denied> {
+        let loc = self.check_remove(raw, expect)?;
+        if loc.full.is_dir() {
+            std::fs::remove_dir(&loc.full)
+        } else {
+            std::fs::remove_file(&loc.full)
+        }
+        .map_err(|e| io(&loc.rel, e))
     }
 }
 

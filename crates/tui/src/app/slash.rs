@@ -1,6 +1,7 @@
 //! Execution of the slash commands parsed by `crate::commands`.
 
 use super::*;
+use crate::commands::CopyTarget;
 
 impl App {
     // ----- commands ---------------------------------------------------------
@@ -111,20 +112,7 @@ impl App {
                 }
             }
             Command::Export(path) => self.export(path),
-            Command::Copy => {
-                let last = self
-                    .messages()
-                    .rev()
-                    .find(|m| m.role == Role::Assistant)
-                    .map(|m| m.content.clone());
-                match last {
-                    None => self.notify("no reply to copy"),
-                    Some(text) => match crate::clipboard::copy(&text) {
-                        Ok(via) => self.notify(format!("reply copied ({via})")),
-                        Err(e) => self.notify(format!("could not copy: {e}")),
-                    },
-                }
-            }
+            Command::Copy(target) => self.copy_last(target),
             Command::Retry => {
                 if self.turn_active() {
                     self.cancel_generation();
@@ -168,7 +156,21 @@ impl App {
             }
             Command::Agent => self.open_agent_picker(),
             Command::Context => self.show_context(),
+            Command::Thinking => {
+                self.show_thinking = !self.show_thinking;
+                // every reply with reasoning is drawn again
+                self.cache.iter_mut().for_each(|c| *c = None);
+                self.notify(if self.show_thinking {
+                    "reasoning shown over each reply · /thinking hides it"
+                } else {
+                    "reasoning hidden · /thinking shows it"
+                });
+            }
             Command::Machine => self.panel = Some(Panel::Machine),
+            Command::Version => {
+                let note = self.version_note();
+                self.notify(note);
+            }
             Command::Help => self.panel = Some(Panel::Help(HelpState::default())),
             Command::Quit => self.should_quit = true,
         }
@@ -180,6 +182,7 @@ impl App {
             Some(Item::Error(_))
                 | Some(Item::Info(_))
                 | Some(Item::Step(_))
+                | Some(Item::Tools(_))
                 | Some(Item::Command { .. })
         ) {
             self.pop_item();
@@ -293,4 +296,92 @@ pub(super) fn providers_table(
         out.push("no providers configured".into());
     }
     out.join("\n")
+}
+
+impl App {
+    /// `/copy`: the last reply, or one of its code blocks.
+    fn copy_last(&mut self, target: CopyTarget) {
+        let reply = self
+            .messages()
+            .rev()
+            .find(|m| m.role == Role::Assistant)
+            .map(|m| m.content.as_str());
+        match pick_copy(reply, target) {
+            Err(e) => self.notify(e),
+            Ok((text, what)) => match crate::clipboard::copy(&text) {
+                Ok(via) => self.notify(format!("{what} copied ({via})")),
+                Err(e) => self.notify(format!("could not copy: {e}")),
+            },
+        }
+    }
+}
+
+/// What `/copy` puts on the clipboard, and how the notice names it. A code
+/// block loses its last newline, so a command pasted into a shell waits for
+/// enter instead of running.
+fn pick_copy(reply: Option<&str>, target: CopyTarget) -> Result<(String, String), String> {
+    let reply = reply.ok_or_else(|| "no reply to copy".to_string())?;
+    let CopyTarget::Code(n) = target else {
+        return Ok((reply.to_string(), "reply".into()));
+    };
+    let blocks = crate::markdown::code_blocks(reply);
+    let total = blocks.len();
+    let index = match n {
+        None => total.checked_sub(1),
+        Some(n) => (n <= total).then(|| n - 1),
+    };
+    let Some(i) = index else {
+        return Err(match total {
+            0 => "no code block in the last reply".into(),
+            1 => "the last reply has 1 code block".into(),
+            _ => format!("the last reply has {total} code blocks"),
+        });
+    };
+    let mut text = blocks.into_iter().nth(i).unwrap_or_default();
+    if text.ends_with('\n') {
+        text.pop();
+    }
+    let what = if total == 1 {
+        "code block".to_string()
+    } else {
+        format!("code block {} of {total}", i + 1)
+    };
+    Ok((text, what))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const REPLY: &str = "First:\n\n```sh\ncargo build\n```\n\nThen:\n\n```sh\ncargo test\n```\n";
+
+    #[test]
+    fn copies_the_reply_whole() {
+        let (text, what) = pick_copy(Some(REPLY), CopyTarget::Reply).unwrap();
+        assert_eq!((text.as_str(), what.as_str()), (REPLY, "reply"));
+    }
+
+    #[test]
+    fn copies_the_last_block_or_the_one_asked() {
+        let last = pick_copy(Some(REPLY), CopyTarget::Code(None)).unwrap();
+        assert_eq!(last, ("cargo test".into(), "code block 2 of 2".into()));
+        let first = pick_copy(Some(REPLY), CopyTarget::Code(Some(1))).unwrap();
+        assert_eq!(first, ("cargo build".into(), "code block 1 of 2".into()));
+        let only = pick_copy(Some("```\nls\n```"), CopyTarget::Code(None)).unwrap();
+        assert_eq!(only, ("ls".into(), "code block".into()));
+    }
+
+    #[test]
+    fn says_why_there_is_nothing_to_copy() {
+        let err = |reply, target| pick_copy(reply, target).unwrap_err();
+        assert_eq!(err(None, CopyTarget::Reply), "no reply to copy");
+        assert_eq!(
+            err(Some("just text"), CopyTarget::Code(None)),
+            "no code block in the last reply"
+        );
+        assert_eq!(
+            err(Some(REPLY), CopyTarget::Code(Some(3))),
+            "the last reply has 2 code blocks"
+        );
+    }
 }

@@ -1,5 +1,5 @@
-//! Rendering of the state: the zones stacked from the conversation down to the
-//! hints, and the panel that takes the bottom over when one is open. No logic.
+//! Rendering of the state: the zones stacked from the machine on the top row
+//! down to the hints, and the panel that takes the bottom over when one is open. No logic.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span, Text};
@@ -13,17 +13,17 @@ use crate::commands::{KEYS, SPECS};
 use crate::picker::{Picker, PickerGroup, Row};
 use crate::theme::Theme;
 use crate::wrap::{truncate, width, wrap_line};
-use moon_agent::{Exec, Pending};
+use moon_agent::{Exec, Pending, PendingEdit, Tool};
 
 mod agent_prompt;
-mod diff;
+pub(crate) mod diff;
 mod machine;
 mod panel;
 mod perms;
 #[cfg(test)]
 mod tests;
 
-pub use panel::RUN_BODY;
+pub use panel::{MOVE_BODY, RUN_BODY};
 
 /// Under this height every row counts: the conversation keeps the blank one
 /// it would otherwise give to the status row.
@@ -35,6 +35,14 @@ pub fn view(app: &mut App, frame: &mut Frame) {
     if area.height < 6 || area.width < 24 {
         frame.render_widget(Paragraph::new("terminal too small").style(t.muted()), area);
         return;
+    }
+    // the top row, fixed: moon, its version and the directory on the left,
+    // the machine on the right. Only if the terminal has rows to spare
+    let roomy = area.height >= GAP_MIN_HEIGHT;
+    let top_h = u16::from(roomy);
+    let [top, area] = Layout::vertical([Constraint::Length(top_h), Constraint::Min(1)]).areas(area);
+    if top_h > 0 {
+        render_top(app, frame, top);
     }
     // an open panel takes the whole bottom: the box and the suggestions
     // step aside until it closes
@@ -49,7 +57,7 @@ pub fn view(app: &mut App, frame: &mut Frame) {
     // a blank row between the conversation and the status: the reply, the
     // question being answered and the `✓ done` that closes it were touching.
     // On a cramped terminal the row goes back to the conversation
-    let gap = u16::from(area.height >= GAP_MIN_HEIGHT);
+    let gap = u16::from(roomy);
     let [conv_area, _gap, status_area, bottom] = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(gap),
@@ -67,7 +75,6 @@ pub fn view(app: &mut App, frame: &mut Frame) {
         render_jump_to_bottom(app, frame, conv_area);
     }
     render_status(app, frame, status_area);
-
     // the separator over the zone that has the focus goes in `moon-soft`
     let rule = |style| Line::from(Span::styled("─".repeat(area.width as usize), style));
 
@@ -98,6 +105,15 @@ pub fn view(app: &mut App, frame: &mut Frame) {
         .input
         .render(input_area, frame.buffer_mut(), &t, cmd_chars);
     app.input_area = Some(input_area);
+    // before the first request an empty box suggests what to ask, in grey,
+    // the cursor on its first letter; the first key typed takes it away
+    if app.shows_placeholder() {
+        let x = input_area.x + crate::input::PROMPT_WIDTH as u16;
+        let max = input_area.right().saturating_sub(x) as usize;
+        frame
+            .buffer_mut()
+            .set_string(x, input_area.y, truncate(PLACEHOLDER, max), t.muted());
+    }
     render_hints(app, frame, hints_area);
 
     // the terminal cursor stays hidden; moon draws the `moon` block itself
@@ -106,6 +122,9 @@ pub fn view(app: &mut App, frame: &mut Frame) {
         frame.buffer_mut()[(x, y)].set_style(t.selected());
     }
 }
+
+/// What the empty input box suggests.
+pub const PLACEHOLDER: &str = "Try \"how do I log an error?\"";
 
 /// The commands matching what is typed, right over the box. They are drawn
 /// like the bottom panel: a title, no surface of their own, the cursor on the
@@ -282,8 +301,27 @@ fn render_status(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// Bottom row: the edit-mode sign and the hints on the left; on the right,
-/// the active model and, if they fit, the machine readings.
+/// Top row: moon, its version — and the newer one, when the daily check
+/// found it — and the directory on the left; the machine readings on the
+/// right. On a narrow terminal the directory gives way first.
+fn render_top(app: &App, frame: &mut Frame, area: Rect) {
+    let right = app.machine_spans();
+    let right_w: usize = right.iter().map(|s| width(&s.content)).sum();
+    let avail = area.width as usize;
+    let left = truncate_spans(app.identity_spans(), avail.saturating_sub(right_w + 3));
+    let left_w: usize = left.iter().map(|s| width(&s.content)).sum();
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(left);
+    spans.push(Span::raw(
+        " ".repeat(avail.saturating_sub(left_w + right_w + 2)),
+    ));
+    spans.extend(right);
+    spans.push(Span::raw(" "));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Bottom row: the agent's name and the `/agent` and `/model` hints on the
+/// left — the directory is on the top row —; on the right, the active model and, if it fits, what it takes up.
 fn render_hints(app: &App, frame: &mut Frame, area: Rect) {
     let t = &app.theme;
     let mut right = app.model_spans();
@@ -296,12 +334,11 @@ fn render_hints(app: &App, frame: &mut Frame, area: Rect) {
     }
     let right_w: usize = right.iter().map(|s| width(&s.content)).sum();
     let avail = area.width as usize;
-    let mut left_spans = vec![Span::raw(" ")];
-    if let Some(mode) = app.edit_mode_span() {
-        left_spans.push(mode);
-        left_spans.push(Span::styled(" · ", t.muted()));
-    }
-    left_spans.push(Span::styled(app.hints().trim_start(), t.muted()));
+    let left_spans = vec![
+        Span::raw(" "),
+        app.agent_span(),
+        Span::styled(" · /agent · /model", t.muted()),
+    ];
     let left = truncate_spans(left_spans, avail.saturating_sub(right_w + 2));
     let left_w: usize = left.iter().map(|s| width(&s.content)).sum();
     let mut spans = left;

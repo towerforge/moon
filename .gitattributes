@@ -1,0 +1,3 @@
+# LF everywhere: the tests compare docs/ byte for byte, and Windows checkouts
+# would otherwise bring CRLF
+* text=auto eol=lf

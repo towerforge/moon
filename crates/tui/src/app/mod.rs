@@ -18,7 +18,6 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::{self, Command};
-use crate::logo::{logo_rows, LOGO_COLS, LOGO_PAD};
 use crate::markdown::Renderer;
 use crate::mentions;
 use crate::picker::{Picker, PickerGroup, PickerItem};
@@ -114,6 +113,9 @@ pub enum Item {
         input: String,
         output: Vec<String>,
     },
+    /// When a turn ends, what the model used in it and how many times, in
+    /// order of first use: `─── 7 tools ── read ×3 · git diff ×2`.
+    Tools(Vec<(String, usize)>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -429,12 +431,10 @@ const CTRL_C_WINDOW: Duration = Duration::from_secs(2);
 /// Cadence of the activity animation: star and shimmer advance one step per
 /// tick. The loop only arms the tick while there is something to animate.
 pub const TICK: Duration = Duration::from_millis(120);
-/// Minimum width of the hints row for the readings with peak.
-const STATS_FULL_MIN_WIDTH: u16 = 120;
-/// Minimum width for the readings without peak; below it they are not drawn.
-const STATS_SHORT_MIN_WIDTH: u16 = 90;
+/// Minimum width of the hints row for the size of the loaded model.
+const MODEL_SIZE_MIN_WIDTH: u16 = 120;
 /// From here on the machine is under strain and the value is highlighted.
-const STATS_HOT_PCT: f32 = 90.0;
+pub(crate) const STATS_HOT_PCT: f32 = 90.0;
 /// Star that grows and shrinks, one frame per tick.
 pub const SPINNER: [&str; 10] = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"];
 /// Rest ticks between two passes of the shimmer over the activity verb.
@@ -474,8 +474,6 @@ pub struct App {
     /// Last sessions opened or written to, by id, most recent first.
     pub recent_sessions: Vec<String>,
     recent_sessions_file: Option<PathBuf>,
-    /// Newer version published, when `update_check` is on and there is one.
-    pub update_available: Option<String>,
     state_dir: Option<PathBuf>,
     pub last_usage: Option<Usage>,
     pub last_run: Option<RunSummary>,
@@ -512,6 +510,12 @@ pub struct App {
     pub should_quit: bool,
     ctrl_c_at: Option<Instant>,
     pub spinner: usize,
+    /// A newer moon published, when `update_check` is on and found one:
+    /// the top row says so until it is installed.
+    pub update_available: Option<String>,
+    /// The model's reasoning drawn over each reply, in grey; off, one line
+    /// says how long it was. `/thinking` flips it.
+    pub show_thinking: bool,
     /// Latest machine readings, for the hints row and `/context`.
     pub sys: crate::sysmon::History,
     /// Sampling pace: fast while the model is working.
@@ -532,8 +536,11 @@ pub struct App {
     pub(crate) agents: Vec<AgentDef>,
     pub(crate) agent: String,
     pub(crate) agents_dir: Option<PathBuf>,
+    /// Something was sent from the box — a message or a command — so the
+    /// suggestion of the empty box is no longer shown.
+    pub(crate) sent: bool,
 
-    md: Renderer,
+    pub(crate) md: Renderer,
     cache: Vec<Option<Rendered>>,
 }
 
@@ -631,7 +638,6 @@ impl App {
             recent_file,
             recent_sessions: models::load_recent(recent_sessions_file.as_deref()),
             recent_sessions_file,
-            update_available: None,
             state_dir: opts.state_dir.clone(),
             last_usage: None,
             last_run: None,
@@ -659,6 +665,8 @@ impl App {
             should_quit: false,
             ctrl_c_at: None,
             spinner: 0,
+            update_available: None,
+            show_thinking: false,
             sys: crate::sysmon::History::default(),
             sys_pace: crate::sysmon::Pace::default(),
             loaded: LoadedState::default(),
@@ -669,12 +677,19 @@ impl App {
             agents: AgentDef::builtin(),
             agent: DEFAULT_AGENT.to_string(),
             agents_dir: opts.agents_dir,
+            sent: false,
             md: Renderer::new(),
             cache: Vec::new(),
             cfg: opts.config,
         };
         for w in warnings {
             app.items.push(Item::Info(w));
+        }
+        // said once at the start, where the header used to say it
+        if app.default_config {
+            app.items.push(Item::Info(
+                "default configuration · `moon config init` writes the file".into(),
+            ));
         }
         for (id, why) in app.registry.disabled() {
             app.items
@@ -1002,6 +1017,21 @@ impl App {
             Action::MouseDrag(x, y) => self.mouse_drag(x, y),
             Action::MouseUp(x, y) => self.mouse_up(x, y),
             Action::ProviderChecked(id, h) => {
+                // the provider of the model in use not answering is said in
+                // the conversation, where the header used to say it
+                if let Err(e) = &h {
+                    if self.current.as_ref().is_some_and(|c| c.provider == id) {
+                        let url = self
+                            .providers
+                            .iter()
+                            .find(|p| p.id == id)
+                            .map(|p| p.base_url.clone())
+                            .unwrap_or_default();
+                        self.push_item(Item::Error(format!(
+                            "{id} is not responding at {url}: {e}"
+                        )));
+                    }
+                }
                 if let Some(p) = self.providers.iter_mut().find(|p| p.id == id) {
                     p.health = Some(h);
                 }
@@ -1048,8 +1078,10 @@ impl App {
             }
             Action::Notice(s) => self.notify(s),
             Action::Ran(id, out) => self.on_ran(id, out, tx),
-            // the welcome block is built on every paint: nothing to invalidate
-            Action::UpdateAvailable(v) => self.update_available = Some(v),
+            Action::UpdateAvailable(v) => {
+                self.push_item(Item::Info(format!("↑ v{v} available · run `moon update`")));
+                self.update_available = Some(v);
+            }
             Action::Quit => self.should_quit = true,
         }
     }

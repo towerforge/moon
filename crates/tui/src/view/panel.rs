@@ -127,7 +127,7 @@ pub(super) fn render(app: &mut App, frame: &mut Frame, area: Rect) {
             Some(Panel::Perms(_)) => perms::perms_content(app, &t, body_w, rows),
             Some(Panel::Browse { picker, .. }) => list_content(&t, picker, body_w, rows),
             Some(Panel::SessionAction { action, .. }) => action_content(&t, action, body_w),
-            Some(Panel::Approval(a)) => approval_content(&t, a, body_w, rows),
+            Some(Panel::Approval(a)) => approval_content(&t, &app.md, a, body_w, rows),
             Some(Panel::AgentAction { action, .. }) => agent_action_content(&t, action, body_w),
             _ => return,
         }
@@ -569,15 +569,22 @@ pub(super) const APPROVAL_PROMPT: usize = 4;
 /// the diff, or the command line, as the body, which scrolls, and under it,
 /// fixed, the question with `1. Yes` and `2. No`. Nothing is on disk, and
 /// nothing runs, until it is confirmed.
-fn approval_content(t: &Theme, a: &mut Approval, w: usize, rows: usize) -> Content {
+fn approval_content(
+    t: &Theme,
+    md: &crate::markdown::Renderer,
+    a: &mut Approval,
+    w: usize,
+    rows: usize,
+) -> Content {
     a.rows = rows;
     a.scroll_by(0);
     let lines = match &a.pending {
-        Pending::Edit(e) => diff::lines(t, &e.diff, w),
+        Pending::Edit(e) if e.diff.lines.is_empty() => change_lines(t, e, w),
+        Pending::Edit(e) => diff::lines(t, md, &e.path, &e.diff, w),
         Pending::Run(e) => run_lines(t, e, w),
     };
     let hint = Line::from(Span::styled(
-        format!(" {}", truncate(a.subject(), w.saturating_sub(2))),
+        format!(" {}", truncate(&a.subject(), w.saturating_sub(2))),
         t.muted(),
     ));
     let (before, what, after) = a.question();
@@ -643,6 +650,31 @@ fn run_lines(t: &Theme, e: &Exec, w: usize) -> Vec<Line<'static>> {
             t.muted(),
         )),
     ]
+}
+
+/// Lines of the body of a change with no diff to show.
+pub const MOVE_BODY: usize = 3;
+
+/// A change with no diff: a move, where it comes from and where it goes,
+/// or an empty file or folder deleted.
+fn change_lines(t: &Theme, e: &PendingEdit, w: usize) -> Vec<Line<'static>> {
+    let row = |mark: &'static str, text: &str| {
+        Line::from(vec![
+            Span::styled(format!(" {mark} "), t.muted()),
+            Span::styled(truncate(text, w.saturating_sub(4)), t.text()),
+        ])
+    };
+    match (&e.to, e.tool) {
+        (Some(to), _) => vec![row(" ", &e.path), row("→", to), Line::from("")],
+        (None, Tool::DeleteFile) if e.expect.is_none() => {
+            vec![
+                row(" ", &e.path),
+                row(" ", "an empty folder"),
+                Line::from(""),
+            ]
+        }
+        _ => vec![row(" ", &e.path), row(" ", "an empty file"), Line::from("")],
+    }
 }
 
 /// The help is read one section at a time: tab walks them and each one
@@ -785,7 +817,9 @@ fn general_lines(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
     let config = app.config_note();
     let agents = app.agents_note();
-    let files: [(&str, &str); 5] = [
+    let version = app.version_note();
+    let files: [(&str, &str); 6] = [
+        ("Version", &version),
         (
             "MOON.md",
             "read into every conversation; /context shows what the model is actually sent",

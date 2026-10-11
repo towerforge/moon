@@ -59,6 +59,7 @@ pub fn prepare(
             Ok(PendingEdit {
                 tool: Tool::WriteFile,
                 path: rel,
+                to: None,
                 diff: diff(&cur.text, &content),
                 before: cur.text,
                 after: content,
@@ -70,6 +71,7 @@ pub fn prepare(
         None => Ok(PendingEdit {
             tool: Tool::WriteFile,
             path: rel,
+            to: None,
             diff: diff("", &content),
             before: String::new(),
             after: content,

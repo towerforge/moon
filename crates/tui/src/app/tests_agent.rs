@@ -216,7 +216,7 @@ async fn the_switch_and_what_it_shows() {
     app.root = dir.path().to_path_buf();
     assert!(!app.tools_on);
     // off, the marker still names the agent everything would run through
-    assert_eq!(app.edit_mode_span().unwrap().content, "⏵ default · all off");
+    assert_eq!(app.agent_span().content, "⏵⏵ default");
     assert!(!text(&app.model_spans()).contains("edits"));
 
     // `/tools` is an alias now: the table over the chosen agent
@@ -245,11 +245,10 @@ async fn the_switch_and_what_it_shows() {
     assert_eq!(yours(&app).get(EDIT_FILES), moon_core::Permission::Ask);
     // the permanent sign, in `moon-soft` and bold, at the left of the
     // hints row: all three are on, so it lists all three
-    let mode = app.edit_mode_span().expect("edit mode indicator");
-    assert_eq!(mode.content, "⏵⏵ default · Read · Edit · Create");
+    let mode = app.agent_span();
+    assert_eq!(mode.content, "⏵⏵ default");
     assert_eq!(mode.style.fg, Some(app.theme.moon_soft));
     assert!(!text(&app.model_spans()).contains("edits"));
-    assert!(app.hints().contains("/agent"));
     // the agent's rules reach the system prompt
     assert!(app.system_prompt_for(&[]).unwrap().contains("no shell"));
     // esc steps back to the groups, and out
@@ -347,7 +346,7 @@ async fn read_only_is_the_reader_and_says_so() {
     assert_eq!(h.agent().name, "reader");
     assert_eq!(h.specs().len(), 2);
     // the marker, the notice and the prompt all say it only reads
-    assert_eq!(app.edit_mode_span().unwrap().content, "⏵⏵ default · Read");
+    assert_eq!(app.agent_span().content, "⏵⏵ default");
     let prompt = app.system_prompt_for(&[]).unwrap();
     assert!(prompt.contains("cannot change files") && !prompt.contains("edit_file"));
     // and the table, reopened, shows the writing rows off; `edit` back on
@@ -360,10 +359,7 @@ async fn read_only_is_the_reader_and_says_so() {
     app.update(key(KeyCode::Esc), &tx);
     app.update(key(KeyCode::Esc), &tx);
     assert_eq!(app.tools_scope(), (true, false));
-    assert_eq!(
-        app.edit_mode_span().unwrap().content,
-        "⏵⏵ default · Read · Edit"
-    );
+    assert_eq!(app.agent_span().content, "⏵⏵ default");
     assert_eq!(app.harness.as_ref().unwrap().agent().name, "editor");
 }
 
@@ -406,16 +402,13 @@ fn the_configuration_turns_it_on_at_startup() {
     assert_eq!(app.tools_scope(), (false, false));
     assert!(!app.tools_write());
     assert_eq!(app.harness.as_ref().unwrap().agent().name, "reader");
-    assert_eq!(app.edit_mode_span().unwrap().content, "⏵⏵ default · Read");
+    assert_eq!(app.agent_span().content, "⏵⏵ default");
 
     // and one box alone
     tools.edit = true;
     let app = at_startup(tools, dir.path());
     assert_eq!(app.tools_scope(), (true, false));
-    assert_eq!(
-        app.edit_mode_span().unwrap().content,
-        "⏵⏵ default · Read · Edit"
-    );
+    assert_eq!(app.agent_span().content, "⏵⏵ default");
 }
 
 #[tokio::test]
@@ -476,12 +469,25 @@ async fn a_turn_reads_a_file_and_answers() {
     // it hangs from the request, with no blank row between
     assert!(shown[at - 1].starts_with("▌ "), "{shown:?}");
     assert!(!shown.iter().any(|l| l.contains("<file")), "{shown:?}");
+    // once the turn is over, what it used goes under the reply
+    assert!(
+        matches!(app.items.last(), Some(Item::Tools(t)) if *t == vec![("read".to_string(), 1)]),
+        "{:?}",
+        app.items.last()
+    );
+    assert!(
+        shown.iter().any(|l| l == "─── 1 tool ── read ×1"),
+        "{shown:?}"
+    );
 
     // `/undo` takes the whole turn away, not just the last reply
     type_text(&mut app, &tx, "/undo");
     app.update(key(KeyCode::Enter), &tx);
     assert_eq!(app.messages().count(), 0);
-    assert!(!app.items.iter().any(|i| matches!(i, Item::Step(_))));
+    assert!(!app
+        .items
+        .iter()
+        .any(|i| matches!(i, Item::Step(_) | Item::Tools(_))));
 }
 
 #[tokio::test]
@@ -581,6 +587,19 @@ async fn an_edit_waits_for_the_ok_and_is_applied() {
     assert!(app.items.iter().any(
         |i| matches!(i, Item::Step(s) if s.outcome == moon_agent::Outcome::Applied && s.added == 1)
     ));
+    // applied, the diff stays in the conversation under its step, one
+    // number and the sign, in line with the step's text
+    let shown: Vec<String> = app
+        .visible_lines(80, 40)
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    let at = shown
+        .iter()
+        .position(|l| l.contains("✎ edit  a.rs"))
+        .expect("step line");
+    assert!(shown[at + 1].starts_with("      1 - hi"), "{shown:?}");
+    assert!(shown[at + 2].starts_with("      1 + bye"), "{shown:?}");
     let reqs = requests.lock().unwrap();
     assert_eq!(reqs.len(), 3);
     let last = reqs[2].messages.last().unwrap();
@@ -616,10 +635,11 @@ async fn skip_leaves_the_file_and_tells_the_model() {
         std::fs::read_to_string(dir.path().join("a.rs")).unwrap(),
         "hi\n"
     );
-    assert!(app
-        .items
-        .iter()
-        .any(|i| matches!(i, Item::Step(s) if s.outcome == moon_agent::Outcome::Skipped)));
+    // skipped: no diff under the step, it was never written
+    assert!(app.items.iter().any(|i| matches!(
+        i,
+        Item::Step(s) if s.outcome == moon_agent::Outcome::Skipped && s.diff.is_none()
+    )));
     let reqs = requests.lock().unwrap();
     let last = reqs[1].messages.last().unwrap();
     assert!(last.content.starts_with("skipped"));
@@ -732,7 +752,10 @@ async fn without_a_provider_the_turn_does_not_hang() {
     app.update(Action::Stream(3, StreamEvent::Done(Usage::default())), &tx);
     // the read ran, the next request could not be sent: the turn is closed
     assert!(app.items.iter().any(|i| matches!(i, Item::Step(_))));
-    assert!(matches!(app.items.last(), Some(Item::Error(e)) if e.contains("provider unavailable")));
+    // why, and then what the turn used, which closes it either way
+    let n = app.items.len();
+    assert!(matches!(&app.items[n - 2], Item::Error(e) if e.contains("provider unavailable")));
+    assert!(matches!(&app.items[n - 1], Item::Tools(_)));
     assert!(!app.turn_active());
 }
 
@@ -746,6 +769,8 @@ async fn a_failed_step_says_why_on_the_same_line() {
         added: 0,
         removed: 0,
         outcome: moon_agent::Outcome::Failed("`a.rs` was not read".into()),
+        command: None,
+        diff: None,
     }));
     let shown: Vec<String> = app
         .visible_lines(80, 40)
@@ -791,10 +816,7 @@ async fn an_agent_runs_on_its_own_permissions_and_the_session_remembers_it() {
     ]));
     assert!(app.tools_on);
     assert_eq!(app.harness.as_ref().unwrap().agent().name, "editor");
-    assert_eq!(
-        text(&[app.edit_mode_span().unwrap()]),
-        "⏵⏵ default · Read · Edit · 2 commands"
-    );
+    assert_eq!(app.agent_span().content, "⏵⏵ default");
 
     // `/agent` is a picker like `/model`: one row per file of the
     // folder, default first and the rest by name
@@ -834,10 +856,7 @@ async fn an_agent_runs_on_its_own_permissions_and_the_session_remembers_it() {
     );
     assert!(app.system_prompt_for(&[]).unwrap().contains("# Reviewing"));
     // the marker says the agent's own; default's file stays as it was
-    assert_eq!(
-        text(&[app.edit_mode_span().unwrap()]),
-        "⏵⏵ reviewer · Read · 5 commands"
-    );
+    assert_eq!(app.agent_span().content, "⏵⏵ reviewer");
     assert!(yours(&app).edits());
     let saved = moon_agent::AgentFile::load(&agents.path().join("default.toml")).unwrap();
     assert_eq!(saved.policy(), yours(&app));
@@ -1077,4 +1096,73 @@ async fn slash_tools_is_an_alias_of_the_table() {
         panic!("expected the permissions table")
     };
     assert_eq!((p.name.as_str(), p.from_picker), ("committer", false));
+}
+
+#[test]
+fn a_move_and_a_delete_say_what_they_are_in_the_approval() {
+    use moon_agent::{Diff, Eol, Pending, PendingEdit, Tool};
+    let change = |tool, path: &str, to: Option<&str>, removed| PendingEdit {
+        tool,
+        path: path.into(),
+        to: to.map(String::from),
+        before: String::new(),
+        after: String::new(),
+        eol: Eol::Lf,
+        bom: false,
+        expect: Some(1),
+        diff: Diff {
+            removed,
+            ..Diff::default()
+        },
+    };
+    let mv = Approval::new(Pending::Edit(change(
+        Tool::MoveFile,
+        "src/a.rs",
+        Some("src/b/a.rs"),
+        0,
+    )));
+    assert_eq!(mv.title(), "Move");
+    assert_eq!(mv.subject(), "src/a.rs → src/b/a.rs");
+    assert_eq!(mv.question(), ("Do you want to move ", "a.rs", "?"));
+    assert_eq!(mv.info(), "");
+    assert_eq!(mv.body_len(), crate::view::MOVE_BODY);
+    let del = Approval::new(Pending::Edit(change(Tool::DeleteFile, "old.rs", None, 40)));
+    assert_eq!(del.title(), "Delete");
+    assert_eq!(del.subject(), "old.rs");
+    assert_eq!(del.question(), ("Do you want to delete ", "old.rs", "?"));
+    assert_eq!(del.info(), "−40");
+}
+
+#[tokio::test]
+async fn the_turn_tools_are_counted_since_the_last_question() {
+    let (mut app, _tx, _rx) = app();
+    let step = |tool, command: Option<&str>| {
+        Item::Step(moon_agent::Step {
+            tool,
+            path: "x".into(),
+            added: 0,
+            removed: 0,
+            outcome: moon_agent::Outcome::Done,
+            command: command.map(String::from),
+            diff: None,
+        })
+    };
+    assert!(app.turn_tools().is_empty());
+    app.push_item(Item::Message(Message::new(Role::User, "one")));
+    app.push_item(step(moon_agent::Tool::ReadFile, None));
+    // a new question starts the count over; commands count by their id,
+    // in order of first use
+    app.push_item(Item::Message(Message::new(Role::User, "two")));
+    app.push_item(step(moon_agent::Tool::RunCommand, Some("git diff")));
+    app.push_item(step(moon_agent::Tool::ReadFile, None));
+    app.push_item(step(moon_agent::Tool::RunCommand, Some("git diff")));
+    app.push_item(step(moon_agent::Tool::EditFile, None));
+    assert_eq!(
+        app.turn_tools(),
+        vec![
+            ("git diff".to_string(), 2),
+            ("read".to_string(), 1),
+            ("edit".to_string(), 1)
+        ]
+    );
 }

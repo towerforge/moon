@@ -8,7 +8,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use moon_agent::{Category, Kind, CATALOG, DEFAULT_STEPS};
-use moon_core::config::ids::{CREATE_FILES, EDIT_FILES};
+use moon_core::config::ids::{CREATE_FILES, DELETE_FILES, EDIT_FILES, MOVE_FILES};
 use moon_core::Permission;
 
 use super::*;
@@ -45,7 +45,7 @@ pub fn group_rows(cat: Category) -> Vec<PermRow> {
 }
 
 /// How many section titles the group draws over its rows: the languages
-/// of `Stack`, none elsewhere.
+/// of `Stack`, the providers of `Models`, none elsewhere.
 pub fn group_sections(cat: Category) -> usize {
     let mut n = 0;
     let mut last = None;
@@ -226,7 +226,7 @@ impl App {
     }
 
     /// `←`/`→` on a row: one step along `off · ask · allow`, clamped at
-    /// the ends; where commands run knows no ask.
+    /// the ends; where commands run knows no ask, other programs no allow.
     fn walk_perm(&mut self, name: &str, row: PermRow, delta: i32) {
         match row {
             PermRow::Steps => {
@@ -238,10 +238,10 @@ impl App {
                 let Some(e) = CATALOG.get(i) else {
                     return;
                 };
-                let order: &[Permission] = if e.kind == Kind::Subfolders {
-                    &[Permission::Off, Permission::Allow]
-                } else {
-                    &[Permission::Off, Permission::Ask, Permission::Allow]
+                let order: &[Permission] = match e.kind {
+                    Kind::Subfolders => &[Permission::Off, Permission::Allow],
+                    Kind::Other => &[Permission::Off, Permission::Ask],
+                    _ => &[Permission::Off, Permission::Ask, Permission::Allow],
                 };
                 let cur = self.permission_of(name, e.id);
                 let at = order.iter().position(|p| *p == cur).unwrap_or(0) as i64;
@@ -322,11 +322,11 @@ impl App {
         self.save_def(def);
         // writes let through without the diff: git is the only way back
         if next == Permission::Allow
-            && (e.id == EDIT_FILES || e.id == CREATE_FILES)
+            && [EDIT_FILES, CREATE_FILES, MOVE_FILES, DELETE_FILES].contains(&e.id)
             && !self.root.join(".git").exists()
         {
             self.notify(
-                "✎ edits allowed without asking · not a git repository: nothing can undo them",
+                "✎ changes allowed without asking · not a git repository: nothing can undo them",
             );
         }
     }

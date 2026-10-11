@@ -5,7 +5,7 @@ use super::*;
 impl App {
     // ----- conversation -----------------------------------------------------
 
-    pub(super) fn push_item(&mut self, item: Item) {
+    pub(crate) fn push_item(&mut self, item: Item) {
         self.items.push(item);
         self.cache.push(None);
     }

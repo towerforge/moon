@@ -2,8 +2,9 @@
 
 Out of the box, with every permission off, moon is a chat client: the model
 only reads what you attach. Permissions change that. They list everything the
-model could do on your project — read and edit files, and run a fixed list of
-commands — and each one is set to one of three words:
+model could do on your project — read, edit, create, move and delete files,
+and run a fixed list of commands — and each one is set to one of three
+words:
 
 | | |
 |---|---|
@@ -53,17 +54,33 @@ its defaults. Inside, one row per capability:
 
 ## What there is
 
-Six groups. **Editor** is moon's own, not programs of the system: `read files`
+Seven groups. **Editor** is moon's own, not programs of the system: `read files`
 is not `cat` (it hands the model the file the way `@path` does, with line
 ranges and the hash an edit must match), `edit existing files` has no command
 it could be (a change you see before it lands), and `create new files` is not
-`mkdir` (a file with its content, shown first). **Files** holds the programs
+`mkdir` (a file with its content, shown first). `move files` and `delete
+files` are not `mv` and `rm`: a move never lands on something that exists,
+and a delete shows you the whole file as removed, takes only a file the
+model has read and that has not changed since, and a folder only once it is
+empty — nothing recursive. **Files** holds the programs
 that work on files. **Git** and **Network** are what their names say.
 **Stack** is each language's tools, in sections: Make, Rust, Node and
 Python. **Docker** is the project's Compose — never `docker run` or
-`docker exec` on their own, which reach the whole machine.
+`docker exec` on their own, which reach the whole machine. **Crypto** is
+`openssl` by subcommand — never `openssl` on its own — with the hashes,
+`uuidgen` and `htpasswd`: secrets, keys and certificates, whatever they
+print going to the model; `openssl s_client` reaches a host, so it is under
+**Network**. **Models** is `ollama` and `openai` by subcommand, in two
+sections, and every entry asks, even what only lists: the models on this
+machine (list, show, run, pull, stop, copy, remove) and what your OpenAI
+account holds (models, uploaded files, fine-tuning jobs, one completion).
+Left out on purpose: `ollama serve`, which never ends; `ollama push`, which
+uploads; `ollama create`, whose Modelfile may name a file outside the
+project; and every `openai` call that uploads a file or starts a
+fine-tuning job. `openai` never takes another `--api-base` or a proxy, so
+the key only goes to OpenAI.
 
-**Editor** also holds two settings on how the model's calls run, whatever
+**Editor** also holds three settings on how the model's calls run, whatever
 their group:
 
 - **`commands in subfolders`**, `off` or `allow`. Off, every command runs in
@@ -72,23 +89,33 @@ their group:
   `..`, `/tmp`, `~` or a symlink that leads out are refused whatever this
   says, the same way a path is. There is no `ask`: a command that asks
   already shows its folder.
+- **`other programs`**, `off` or `ask`. On, the model may also call a
+  program this list does not have — `rm`, `rustup`, `gh` — or one it has
+  off, and every such call is shown to you first: there is no `allow`. It is
+  a name on `PATH`, never a path, a shell (`sh`, `bash`, `cmd`) or something
+  that runs another program (`env`, `xargs`, `sudo`); its arguments get the
+  same checks as any command, and the deny list of a program the catalogue
+  knows still applies (`git push --exec-path` is refused).
 - **`max steps per message`**, described above. It is a number, not a
   permission, so turning `Editor` off leaves it as it is.
 
-This is the whole catalogue; nothing outside it can be run. The tables are
+This is the whole catalogue; outside it, only `other programs`, asking. The tables are
 generated from the code (`UPDATE_DOCS=1 cargo test -p moon-agent docs`), so
 they are what moon has.
 
 <!-- CATALOG:START -->
 
-**Editor** — moon's own tools, and how the model's calls run: files read and changed with a diff, commands in subfolders, the step limit
+**Editor** — moon's own tools, and how the model's calls run: files read, changed, moved and deleted with your ok, commands in subfolders, other programs, the step limit
 
 | Name | Default when turned on | What it does | Refused flags |
 |---|---|---|---|
 | `read files` | `allow` | open and list files under this directory | — |
 | `edit existing files` | `ask` | a diff you apply or skip; allow writes it without showing you | — |
 | `create new files` | `ask` | a new file you apply or skip; allow writes it without showing you | — |
+| `move files` | `ask` | a rename you apply or skip; never over a file that exists | — |
+| `delete files` | `ask` | the file shown as removed, you apply or skip; only one it has read | — |
 | `commands in subfolders` | `allow` | in a folder below this one, never above it | — |
+| `other programs` | `ask` | any program not listed here, every call shown to you first; there is no allow | — |
 
 **Files** — programs that work on files, run as they are
 
@@ -172,10 +199,59 @@ they are what moon has.
 | `docker compose restart` | `ask` | restart a service | `-H` `--host` `--context` `--config` |
 | `docker compose exec` | `ask` | run a command inside a service | `-H` `--host` `--context` `--config` |
 
+**Crypto** — secrets, hashes, keys and certificates: what only prints allows, what makes a key asks; what they print goes to the model
+
+| Name | Default when turned on | What it does | Refused flags |
+|---|---|---|---|
+| `openssl rand` | `allow` | random bytes, `-base64 12` or `-hex 32`: a secret or a token | `-engine` `-provider` `-provider-path` `-propquery` `-config` `-writerand` |
+| `openssl dgst` | `allow` | a file's hash, `-sha256`, or its HMAC | `-engine` `-provider` `-provider-path` `-propquery` `-config` `-writerand` |
+| `openssl base64` | `allow` | encode to base64, or decode with `-d` | `-engine` `-provider` `-provider-path` `-propquery` `-config` `-writerand` |
+| `openssl x509` | `allow` | read a certificate: `-noout -text`, `-dates`, `-subject` | `-engine` `-provider` `-provider-path` `-propquery` `-config` `-writerand` |
+| `openssl verify` | `allow` | check a certificate against its chain | `-engine` `-provider` `-provider-path` `-propquery` `-config` `-writerand` |
+| `openssl pkey` | `ask` | read a key, or its public half with `-pubout`; a private one goes to the model | `-engine` `-provider` `-provider-path` `-propquery` `-config` `-writerand` |
+| `openssl genpkey` | `ask` | make a private key, into a file: `-out` is required | `-engine` `-provider` `-provider-path` `-propquery` `-config` `-writerand` |
+| `openssl req` | `ask` | a CSR, or a self-signed certificate with `-x509` | `-engine` `-provider` `-provider-path` `-propquery` `-config` `-writerand` |
+| `shasum` | `allow` | a file's hash, `-a 256`, or check a list with `-c` | — |
+| `sha256sum` | `allow` | a file's SHA-256, or check a list with `-c` | — |
+| `uuidgen` | `allow` | a random UUID | — |
+| `htpasswd` | `ask` | a basic-auth line, `-nbB user password`, or into a file | — |
+
+**Models** — the models on this machine and in your OpenAI account: everything asks, what a model answers goes to the model
+
+*Ollama*
+
+| Name | Default when turned on | What it does | Refused flags |
+|---|---|---|---|
+| `ollama list` | `ask` | the models installed | `--insecure` |
+| `ollama ps` | `ask` | the models loaded in memory | `--insecure` |
+| `ollama show` | `ask` | a model's parameters, template and Modelfile | `--insecure` |
+| `ollama run` | `ask` | one prompt and its answer: `ollama run qwen3 "…"` | `--insecure` |
+| `ollama pull` | `ask` | download a model, often gigabytes | `--insecure` |
+| `ollama stop` | `ask` | unload a model from memory | `--insecure` |
+| `ollama cp` | `ask` | copy a model under another name | `--insecure` |
+| `ollama rm` | `ask` | delete a model from the machine, outside the project | `--insecure` |
+
+*OpenAI*
+
+| Name | Default when turned on | What it does | Refused flags |
+|---|---|---|---|
+| `openai api models.list` | `ask` | the models of your account, your fine-tunes included | `-b` `--api-base` `-p` `--proxy` `--azure-endpoint` `--api-type` |
+| `openai api models.retrieve` | `ask` | a model's details: whether it exists and whose it is | `-b` `--api-base` `-p` `--proxy` `--azure-endpoint` `--api-type` |
+| `openai api models.delete` | `ask` | delete one of your fine-tuned models | `-b` `--api-base` `-p` `--proxy` `--azure-endpoint` `--api-type` |
+| `openai api files.list` | `ask` | the files uploaded to your account | `-b` `--api-base` `-p` `--proxy` `--azure-endpoint` `--api-type` |
+| `openai api files.retrieve` | `ask` | an uploaded file's size, purpose and status | `-b` `--api-base` `-p` `--proxy` `--azure-endpoint` `--api-type` |
+| `openai api files.delete` | `ask` | delete an uploaded file | `-b` `--api-base` `-p` `--proxy` `--azure-endpoint` `--api-type` |
+| `openai api fine_tuning.jobs.list` | `ask` | the fine-tuning jobs, running and past | `-b` `--api-base` `-p` `--proxy` `--azure-endpoint` `--api-type` |
+| `openai api fine_tuning.jobs.retrieve` | `ask` | a job's status and the model it produced | `-b` `--api-base` `-p` `--proxy` `--azure-endpoint` `--api-type` |
+| `openai api fine_tuning.jobs.list_events` | `ask` | a job's log: loss, errors | `-b` `--api-base` `-p` `--proxy` `--azure-endpoint` `--api-type` |
+| `openai api fine_tuning.jobs.cancel` | `ask` | stop a fine-tuning job | `-b` `--api-base` `-p` `--proxy` `--azure-endpoint` `--api-type` |
+| `openai api chat.completions.create` | `ask` | one completion, `-m model -g user "…"`: it spends credit | `-b` `--api-base` `-p` `--proxy` `--azure-endpoint` `--api-type` |
+
 **Network** — what a command fetches goes to the model; flags that would send a file are refused
 
 | Name | Default when turned on | What it does | Refused flags |
 |---|---|---|---|
+| `openssl s_client` | `ask` | the certificate a host serves: `-connect host:443` | `-engine` `-provider` `-provider-path` `-propquery` `-config` `-writerand` |
 | `curl` | `ask` | fetch a URL; what it gets goes to the model | `-d` `--data` `--data-ascii` `--data-binary` `--data-raw` `--data-urlencode` `--json` `-F` `--form` `--form-string` `-T` `--upload-file` `-K` `--config` |
 | `wget` | `ask` | download a URL into the project | `--post-file` `--body-file` `-i` `--input-file` `--config` `-e` `--execute` |
 
@@ -298,12 +374,15 @@ max_steps   = 8
 # no prompt: moon's own, the editor's when it may write files, the reader's otherwise
 
 [permissions]
-# Editor — moon's own tools, and how the model's calls run: files read and changed with a diff, commands in subfolders, the step limit
+# Editor — moon's own tools, and how the model's calls run: files read, changed, moved and deleted with your ok, commands in subfolders, other programs, the step limit
 "read files"            = "allow"  # open and list files under this directory
 "edit existing files"   = "off"    # a diff you apply or skip; allow writes it without showing you
 "create new files"      = "off"    # a new file you apply or skip; allow writes it without showing you
+"move files"            = "off"    # a rename you apply or skip; never over a file that exists
+"delete files"          = "off"    # the file shown as removed, you apply or skip; only one it has read
 
 "commands in subfolders" = "allow"  # in a folder below this one, never above it
+"other programs"        = "off"    # any program not listed here, every call shown to you first; there is no allow
 
 # Files — programs that work on files, run as they are
 "ls"                    = "allow"  # list a folder
@@ -379,8 +458,8 @@ What it cannot protect you from:
 
 ## What you see
 
-- The agent and what it may do at the left of the bottom row:
-  `⏵⏵ committer · Read · 4 commands`, or `⏵ default · all off`.
+- The agent's name at the left of the bottom row, `⏵⏵ committer`: bold while
+  it has permissions, muted when they are all off.
 - One line per tool call in the conversation, hanging from the message:
   `⎿  read  src/a.rs`, `⎿  ✎ edit  src/a.rs  +3 −1  applied`,
   `⎿  run   git diff --stat`, and `✗` with the reason when one fails.

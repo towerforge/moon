@@ -5,6 +5,7 @@
 <p align="center">
   <a href="#install"><img alt="Rust 1.88 or newer" src="https://img.shields.io/badge/rust-1.88%2B-8fb8ff?style=flat-square&logo=rust&logoColor=1c1c29"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-8fb8ff?style=flat-square"></a>
+  <a href="https://github.com/towerforge/moon/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/towerforge/moon/total?style=flat-square&color=8fb8ff"></a>
   <img alt="macOS, Linux and Windows" src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-8fb8ff?style=flat-square">
   <img alt="Ollama and OpenAI-compatible providers" src="https://img.shields.io/badge/providers-Ollama%20%C2%B7%20OpenAI--compatible-8fb8ff?style=flat-square">
 </p>
@@ -84,10 +85,10 @@ It downloads the release for your platform, checks its SHA-256 and swaps the bin
 
 ## Using moon
 
-From top to bottom: a header with the version, the model and the directory you started in; the conversation; a status line with what the model is doing and how much of the context window is used; the input box; and a row of hints with the agent, the model and the machine:
+From top to bottom: a fixed top row with moon's version (and the newer one, when it is out) and the directory you started in on the left, and the machine (cpu, ram, gpu, swap and their peaks) on the right; the conversation; a status line with what the model is doing and how much of the context window is used; the input box; and a bottom row with the agent and the model. When a turn ends, a line under the reply says what the model used in it (`─── 6 tools ── read ×3 · git diff ×2 · edit ×1`).
 
 ```
-⏵⏵ default · Read · 2 commands   /agent agents · /model switch model   qwen2.5-coder:14b · 12.1G · cpu 34% ▲61 · ram 57% ▲75
+⏵⏵ default · /agent · /model   qwen2.5-coder:14b · 12.1G · cpu 34% ▲61 · ram 57% ▲75
 ```
 
 Every list — models, sessions, files, agents and their permissions, the help — unfolds as a panel under the conversation, in the input box's place: `↑↓` move, the number of a row jumps to it, `Enter` picks, `Esc` closes. Nothing floats over what you are reading. `/machine` draws the CPU, RAM and GPU readings over the last three minutes. The whole screen, row by row, is in [docs/interface.md](docs/interface.md).
@@ -107,10 +108,12 @@ Type `/` and the commands that match appear over the box: `↑↓` move, `Tab` c
 | `/sessions` | resume a saved conversation (also `Ctrl+S`); `Ctrl+R` renames, `Ctrl+D` deletes |
 | `/new` · `/clear` | new conversation · clear the view without closing the conversation |
 | `/save [name]` · `/export [path.md]` | rename the conversation · write it as Markdown |
-| `/retry` · `/undo` · `/copy` | regenerate the last reply · remove the last exchange · copy the last reply |
+| `/retry` · `/undo` · `/copy [code [n]]` | regenerate the last reply · remove the last exchange · copy the last reply, or with `code` its last code block (`code 2`: the second) |
 | `/system [text]` | show or set the system prompt |
 | `/params key=value …` | generation parameters: `temperature`, `num_ctx`, `top_p`, `max_tokens`, `think`, `stop` |
+| `/thinking` | show or hide the model's reasoning over its replies |
 | `/machine` | cpu, ram, gpu and swap drawn over the last 3 minutes |
+| `/version` | moon's version, and whether a newer one is out |
 | `/help` · `/quit` | commands and keys, in a scrollable panel · quit |
 
 ### Keys
@@ -147,7 +150,7 @@ Off until you turn it on. Everything the model does goes through an **agent**, a
 `moon config init` writes two: `default.toml`, the agent every conversation starts with (reading on, nothing else), and `reviewer.toml`, a sample that reads the project and looks at git and never writes. Any other file in the folder is an agent of yours — and you do not have to write it by hand:
 
 - `/agent` is a picker like `/model`'s: `Enter` picks the agent for the conversation, `Ctrl+A` creates one (name it, and moon writes a template and opens its permissions), `Ctrl+R` renames it, `Ctrl+D` deletes it.
-- `Ctrl+T` opens its **permissions**: the groups (**Editor**, **Files**, **Git**, **Stack**, **Docker**, **Network**), then one row per capability, each **off** (not offered), **ask** (shown to you first: the diff, or the command line) or **allow** (runs on its own). Every step is saved to the file at once.
+- `Ctrl+T` opens its **permissions**: the groups (**Editor**, **Files**, **Git**, **Stack**, **Docker**, **Crypto**, **Models**, **Network**), then one row per capability, each **off** (not offered), **ask** (shown to you first: the diff, or the command line) or **allow** (runs on its own). Every step is saved to the file at once.
 - `Ctrl+E` opens its **description and prompt**, edited in moon itself. No prompt means moon's own.
 
 ```

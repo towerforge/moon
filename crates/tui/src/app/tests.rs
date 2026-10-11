@@ -312,9 +312,8 @@ async fn scroll_and_history() {
 
     type_text(&mut app, &tx, "/clear");
     app.update(key(KeyCode::Enter), &tx);
-    // blank row + medium moon (4 rows); the default-configuration notice goes
-    // on the fourth
-    assert_eq!(app.visible_lines(60, 10).len(), 5);
+    // no header: a cleared view shows nothing at all
+    assert_eq!(app.visible_lines(60, 10).len(), 0);
     app.update(key(KeyCode::Up), &tx);
     assert_eq!(app.input.text(), "/clear");
     app.update(key(KeyCode::Down), &tx);
@@ -333,7 +332,6 @@ async fn command_suggestions() {
     type_text(&mut app, &tx, "hel");
     assert_eq!(app.suggestions().unwrap().0[0].name, "help");
     assert_eq!(app.command_span(), 4);
-    assert!(app.hints().contains("tab or enter"));
     app.update(key(KeyCode::Enter), &tx);
     assert!(matches!(app.panel, Some(Panel::Help(_))));
     assert!(app.suggestions().is_none()); // no list while a panel is open
@@ -381,7 +379,6 @@ async fn command_suggestions() {
     assert_eq!(app.input.text(), "/s");
     assert_eq!(app.suggestions().unwrap().0.len(), 3);
     assert!(!app.suggest_navigable());
-    assert!(!app.hints().contains("choose"));
     app.update(key(KeyCode::Up), &tx);
     assert_eq!(app.input.text(), "/q");
     app.update(key(KeyCode::Down), &tx);
@@ -880,14 +877,13 @@ async fn mouse_selection() {
     let conv = ratatui::layout::Rect::new(0, 0, 40, 12);
     app.conv_area = Some(conv);
     let _ = app.visible_lines(40, 12);
-    // blank + welcome block (4 rows) + blank + "one two four" (row 6) + blank
-    // + "second entry" (row 8)
-    app.update(Action::MouseDown(4, 6), &tx);
-    app.update(Action::MouseDrag(5, 8), &tx);
+    // blank + "one two four" (row 1) + blank + "second entry" (row 3)
+    app.update(Action::MouseDown(4, 1), &tx);
+    app.update(Action::MouseDrag(5, 3), &tx);
     assert_eq!(app.selection_text(), "two four\n\nsecond");
     // a click without dragging leaves no selection
-    app.update(Action::MouseDown(3, 6), &tx);
-    app.update(Action::MouseUp(3, 6), &tx);
+    app.update(Action::MouseDown(3, 1), &tx);
+    app.update(Action::MouseUp(3, 1), &tx);
     assert!(app.selection.is_none());
     // a click on the input box moves the cursor and does not select
     type_text(&mut app, &tx, "some words");
@@ -963,29 +959,17 @@ async fn zz_look() {
 }
 
 #[tokio::test]
-async fn the_new_version_notice_shows_in_the_welcome() {
+async fn the_new_version_notice_goes_to_the_conversation() {
     let (mut app, tx, _rx) = app();
-    let text = |app: &App| {
-        app.welcome_lines()
-            .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let before = app.welcome_lines().len();
-    assert!(!text(&app).contains("available"));
-
+    let n = app.items.len();
     app.update(Action::UpdateAvailable("0.2.0".into()), &tx);
-    let out = text(&app);
+    assert_eq!(app.items.len(), n + 1);
+    assert_eq!(app.update_available.as_deref(), Some("0.2.0"));
+    let Some(Item::Info(out)) = app.items.last() else {
+        panic!("expected an info line, got {:?}", app.items.last())
+    };
     assert!(out.contains("↑ v0.2.0 available"), "{out}");
     assert!(out.contains("moon update"), "{out}");
-    // the block grows by that one line and nothing else moves
-    assert_eq!(app.welcome_lines().len(), before + 1);
 }
 
 #[tokio::test]
@@ -1006,4 +990,58 @@ async fn model_picker_closed_says_which_model_stays() {
     app.update(key(KeyCode::Esc), &tx);
     assert!(matches!(app.items.last(), Some(Item::Command { input, .. }) if input == "/model"));
     assert_eq!(last_answer(&app), "kept model as ollama/llama3");
+}
+
+#[tokio::test]
+async fn version_says_what_it_is_and_whether_a_newer_one_is_out() {
+    let (mut app, tx, _rx) = app();
+    type_text(&mut app, &tx, "/version");
+    app.update(key(KeyCode::Enter), &tx);
+    let expected = format!("moon v{}", app.version);
+    assert!(
+        last_answer(&app).starts_with(&expected),
+        "{}",
+        last_answer(&app)
+    );
+    assert!(!last_answer(&app).contains("available"));
+    app.update(Action::UpdateAvailable("0.2.0".into()), &tx);
+    type_text(&mut app, &tx, "/v");
+    app.update(key(KeyCode::Enter), &tx);
+    assert!(
+        last_answer(&app).contains("↑ v0.2.0 available"),
+        "{}",
+        last_answer(&app)
+    );
+}
+
+#[tokio::test]
+async fn thinking_shows_and_hides_the_reasoning_over_the_reply() {
+    let (mut app, tx, _rx) = app();
+    app.items.clear();
+    let mut m = Message::new(Role::Assistant, "the answer");
+    m.thinking = Some("first I check the file".into());
+    app.push_item(Item::Message(m));
+    let shown = |app: &mut App| {
+        app.visible_lines(80, 40)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // folded by default: one line with its length and how to open it
+    let s = shown(&mut app);
+    assert!(s.contains("▸ hidden reasoning (22 chars)"), "{s}");
+    assert!(!s.contains("first I check"), "{s}");
+    type_text(&mut app, &tx, "/thinking");
+    app.update(key(KeyCode::Enter), &tx);
+    assert!(app.show_thinking);
+    let s = shown(&mut app);
+    assert!(s.contains("▾ reasoning (22 chars)"), "{s}");
+    assert!(s.contains("first I check the file"), "{s}");
+    assert!(s.contains("the answer"), "{s}");
+    // and back, the cache notwithstanding
+    type_text(&mut app, &tx, "/reasoning");
+    app.update(key(KeyCode::Enter), &tx);
+    assert!(!app.show_thinking);
+    assert!(!shown(&mut app).contains("first I check"));
 }

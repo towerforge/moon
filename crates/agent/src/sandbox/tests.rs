@@ -433,3 +433,131 @@ fn encode_and_decode_are_inverse() {
     assert_eq!(Eol::detect("no newline"), Eol::Lf);
     assert_eq!(Eol::detect("\r\n"), Eol::CrLf);
 }
+
+#[test]
+fn a_move_stays_inside_and_never_lands_on_something() {
+    let (dir, sb) = tree();
+    let r = dir.path();
+    // a file, and a folder with what it holds
+    sb.move_path("src/main.rs", "src/app.rs", false).unwrap();
+    assert!(!r.join("src/main.rs").exists() && r.join("src/app.rs").exists());
+    sb.move_path("src/deep", "src/inner", false).unwrap();
+    assert!(r.join("src/inner/x.rs").exists());
+    // new folders on the way only when asked for
+    assert!(matches!(
+        denied(sb.check_move("README.md", "docs/README.md", false)),
+        Denied::NotFound(p) if p == "docs"
+    ));
+    sb.move_path("README.md", "docs/README.md", true).unwrap();
+    assert!(r.join("docs/README.md").exists());
+    // never over something that exists, nor onto itself, nor into itself
+    assert!(matches!(
+        denied(sb.check_move("src/app.rs", "src/win.rs", false)),
+        Denied::Exists(_)
+    ));
+    assert!(matches!(
+        denied(sb.check_move("src/app.rs", "src/app.rs", false)),
+        Denied::Exists(_)
+    ));
+    assert!(matches!(
+        denied(sb.check_move("src", "src/inner/src", true)),
+        Denied::BadName(_, _)
+    ));
+    // what is missing, outside, secret or denied stays where it is
+    assert!(matches!(
+        denied(sb.check_move("nope.rs", "x.rs", false)),
+        Denied::NotFound(_)
+    ));
+    for (from, to) in [
+        ("src/app.rs", "../app.rs"),
+        ("src/app.rs", "/tmp/app.rs"),
+        (".env", "env.txt"),
+        ("src/app.rs", ".env"),
+        (".git/config", "config"),
+        ("src/app.rs", ".git/app.rs"),
+        (".github/workflows/ci.yml", "ci.yml"),
+        ("src/app.rs", ".github/workflows/app.yml"),
+    ] {
+        assert!(sb.check_move(from, to, true).is_err(), "{from} → {to}");
+    }
+    // a folder that would carry a secret along, or land one in a denied place
+    fs::create_dir_all(r.join("conf")).unwrap();
+    fs::write(r.join("conf/.env"), "S=1\n").unwrap();
+    assert!(matches!(
+        denied(sb.check_move("conf", "settings", false)),
+        Denied::Secret(_)
+    ));
+    fs::create_dir_all(r.join("jobs")).unwrap();
+    fs::write(r.join("jobs/ci.yml"), "on: push\n").unwrap();
+    assert!(matches!(
+        denied(sb.check_move("jobs", ".github/workflows/jobs", true)),
+        Denied::DenyList(_)
+    ));
+    // the root is not something to move
+    assert!(sb.check_move(".", "x", true).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_move_or_a_delete_never_goes_through_a_symlink() {
+    let (dir, sb) = tree();
+    let r = dir.path();
+    std::os::unix::fs::symlink(r.join("src"), r.join("link")).unwrap();
+    assert!(matches!(
+        denied(sb.check_move("link/main.rs", "main.rs", false)),
+        Denied::Symlink(_)
+    ));
+    assert!(matches!(
+        denied(sb.check_move("README.md", "link/README.md", false)),
+        Denied::Symlink(_)
+    ));
+    assert!(matches!(
+        denied(sb.check_remove("link", None)),
+        Denied::Symlink(_)
+    ));
+}
+
+#[test]
+fn a_delete_needs_the_hash_it_was_read_with_and_an_empty_folder() {
+    let (dir, sb) = tree();
+    let r = dir.path();
+    let f = sb.read("src/main.rs").unwrap();
+    // not read, or changed since
+    assert!(matches!(
+        denied(sb.check_remove("src/main.rs", None)),
+        Denied::NotRead(_)
+    ));
+    fs::write(r.join("src/main.rs"), "fn main() { changed() }\n").unwrap();
+    assert!(matches!(
+        denied(sb.remove("src/main.rs", Some(f.hash))),
+        Denied::Stale(_)
+    ));
+    assert!(r.join("src/main.rs").exists());
+    let f = sb.read("src/main.rs").unwrap();
+    sb.remove("src/main.rs", Some(f.hash)).unwrap();
+    assert!(!r.join("src/main.rs").exists());
+    // a folder only once it is empty
+    assert!(matches!(
+        denied(sb.check_remove("src/deep", None)),
+        Denied::NotEmpty(_)
+    ));
+    let x = sb.read("src/deep/x.rs").unwrap();
+    sb.remove("src/deep/x.rs", Some(x.hash)).unwrap();
+    sb.remove("src/deep", None).unwrap();
+    assert!(!r.join("src/deep").exists());
+    // never the root, a secret, what is denied, or what is not there
+    assert!(sb.check_remove(".", None).is_err());
+    assert!(matches!(
+        denied(sb.check_remove(".env", Some(0))),
+        Denied::Secret(_)
+    ));
+    assert!(sb.check_remove(".git/config", Some(0)).is_err());
+    assert!(sb
+        .check_remove(".github/workflows/ci.yml", Some(0))
+        .is_err());
+    assert!(matches!(
+        denied(sb.check_remove("nope.rs", Some(0))),
+        Denied::NotFound(_)
+    ));
+    assert!(sb.check_remove("../x", Some(0)).is_err());
+}

@@ -1,4 +1,4 @@
-//! The ten tokens of the Moon system and their role in the TUI. No widget uses
+//! The twelve tokens of the Moon system and their role in the TUI. No widget uses
 //! a literal `Color`: everything goes through here.
 
 use std::collections::BTreeMap;
@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use ratatui::style::{Color, Modifier, Style};
 
 /// (token, hex, nearest xterm-256 index)
-pub const TOKENS: [(&str, &str, u8); 10] = [
+pub const TOKENS: [(&str, &str, u8); 12] = [
     ("night", "#1c1c29", 234),
     ("night-raised", "#2a2a3c", 236),
     ("night-line", "#4a4a60", 239),
@@ -18,6 +18,9 @@ pub const TOKENS: [(&str, &str, u8); 10] = [
     // status: soft green and red, outside the brand; only for the end of a request
     ("ok", "#8fd9a0", 115),
     ("alert", "#ff8f8f", 210),
+    // the same, dark, under the lines a diff adds and removes
+    ("ok-bg", "#1f3b2c", 22),
+    ("alert-bg", "#4a2229", 52),
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -32,6 +35,8 @@ pub struct Theme {
     pub on_moon: Color,
     pub ok: Color,
     pub alert: Color,
+    pub ok_bg: Color,
+    pub alert_bg: Color,
     pub truecolor: bool,
 }
 
@@ -64,6 +69,8 @@ impl Theme {
             on_moon: c(7),
             ok: c(8),
             alert: c(9),
+            ok_bg: c(10),
+            alert_bg: c(11),
             truecolor: true,
         }
     }
@@ -82,6 +89,8 @@ impl Theme {
             on_moon: c(7),
             ok: c(8),
             alert: c(9),
+            ok_bg: c(10),
+            alert_bg: c(11),
             truecolor: false,
         }
     }
@@ -133,6 +142,8 @@ impl Theme {
             "on-moon" => self.on_moon = color,
             "ok" => self.ok = color,
             "alert" => self.alert = color,
+            "ok-bg" => self.ok_bg = color,
+            "alert-bg" => self.alert_bg = color,
             _ => return false,
         }
         true
@@ -174,6 +185,16 @@ impl Theme {
     /// Request cancelled: `✗ cancelled`.
     pub fn alert(&self) -> Style {
         Style::new().fg(self.alert)
+    }
+
+    /// A line a diff adds, the whole row.
+    pub fn added(&self) -> Style {
+        Style::new().fg(self.ink).bg(self.ok_bg)
+    }
+
+    /// A line a diff removes, the whole row.
+    pub fn removed(&self) -> Style {
+        Style::new().fg(self.ink).bg(self.alert_bg)
     }
 
     pub fn line(&self) -> Style {

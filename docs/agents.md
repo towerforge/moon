@@ -46,10 +46,11 @@ There is no rule to apply: the policy is the file's. It went through
 (editing and creating need reading).
 
 An agent is a value, not behaviour. It has no tools, no sandbox and no
-configuration of its own: the five tools, the catalogue and every check in
+configuration of its own: the seven tools, the catalogue and every check in
 [harness.md](harness.md) are shared by all agents, and an agent can neither
 name, widen nor get around them. A capability outside the catalogue cannot be
-written into an agent file, because the catalogue is in the code.
+written into an agent file, because the catalogue is in the code; `other
+programs` is one capability, `off` or `ask`, not a way to name new ones.
 
 `editor` and `reader` are not agents you pick: they are moon's own two
 prompts, given to any agent without a prompt of its own — the editor's when
@@ -157,7 +158,7 @@ agent the conversation is using.
 ### The permissions panel (`ctrl+t`)
 
 The same two-level panel moon always had, one per agent. First the groups
-(Editor, Files, Git, Build, Docker, Network), one row each with a summary of
+(Editor, Files, Git, Stack, Docker, Crypto, Models, Network), one row each with a summary of
 what this agent may do in it, and the step limit on `Editor`:
 
 - `enter` opens a group; `←`/`→` turn the whole of it off, or on with its
@@ -193,9 +194,9 @@ input box the conversation uses. moon never launches an external editor.
 
 ## Choosing an agent
 
-- **The marker** at the left of the bottom row always names the agent,
-  `default` included: `⏵⏵ reviewer · Read · 5 commands` while it has
-  permissions, `⏵ default · all off` when it has none.
+- **The marker** at the left of the bottom row is only `⏵⏵` and the agent's
+  name, `default` included: in `moon-soft` and bold while it has permissions,
+  muted when it has none.
 - **The tools switch follows the chosen agent's policy**
   (`refresh_agent_state`): anything on turns the tools on, nothing on turns
   them off. Nothing is written anywhere by choosing.

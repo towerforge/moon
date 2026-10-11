@@ -1,8 +1,9 @@
 # The harness: how the model acts on a project
 
 *Design, 2026-09-22 · implemented the same day in `crates/agent`. Amended on
-2026-09-24 (permissions and commands) and 2026-09-28 (named agents, see
-[agents.md](agents.md)). This document describes the code as it is; the
+2026-09-24 (permissions and commands), 2026-09-28 (named agents, see
+[agents.md](agents.md)) and 2026-09-30 (other programs, asking; moving and
+deleting files). This document describes the code as it is; the
 decisions that changed it are dated at the end.*
 
 With every permission off, moon is a chat client: the model reads what you
@@ -54,6 +55,8 @@ crates/
 │       │   ├── list_dir.rs   list_dir { path? } → entries (skips target/, .git/, node_modules/)
 │       │   ├── edit_file.rs  edit_file { path, old_string, new_string, replace_all? } → PendingEdit
 │       │   ├── write_file.rs write_file { path, content } → PendingEdit (new file or full replace)
+│       │   ├── move_file.rs  move_file { from, to } → PendingEdit (a rename, never over anything)
+│       │   ├── delete_file.rs delete_file { path } → PendingEdit (a file read, or an empty folder)
 │       │   ├── run_command.rs run_command { command, args?, dir? } → Exec; runs it with no shell
 │       │   └── diff.rs       the line diff and its +N −M, computed here, painted by the interface
 │       └── sandbox/          THE BOUNDARY · every tool goes through it, nothing goes around it
@@ -63,7 +66,7 @@ crates/
 │   ├── app/agent.rs          runs the harness's commands, the approval panel, the /agent picker
 │   ├── app/perms.rs          the permissions panel, and where each step is written
 │   ├── app/agent_prompt.rs   the prompt editor
-│   ├── view/diff.rs          paints a diff with the theme (added in `ok`, removed in `alert`)
+│   ├── view/diff.rs          paints a diff with the theme (rows on `ok-bg` and `alert-bg`, code colored)
 │   └── view/{panel,perms,agent_prompt}.rs
 └── cli/                      `moon ask` gets no tools: nowhere to approve
 ```
@@ -201,7 +204,16 @@ Checks, in order, and the reason the model reads back:
 6. **Freshness, for edits.** `edit_file` and `write_file` on an existing file
    require a `read_file` of the same path earlier in the conversation, and the
    hash that read returned must equal the file's hash now. Otherwise `file
-   changed since it was read; read it again`.
+   changed since it was read; read it again`. `delete_file` follows the same
+   rule: a file goes only if it was read and has not changed since.
+7. **Moves and deletes.** A move never lands on something that exists (a
+   rename that only changes case is not "over" anything), never into itself,
+   never through a symlink, and a folder moves only if nothing it holds is
+   denied where it is or where it would land: `config/` cannot carry a `.env`
+   along, nor put a file in `.github/workflows/`. The folders on the way are
+   made only when `create new files` is on. A delete takes a file whole, or a
+   folder that is empty, never a tree at once. Both are checked again when
+   the user applies them: the disk may have changed while they looked.
 
 Writes are atomic: content to `<path>.moon-tmp` in the same directory, then
 `rename`. Permissions of the original are preserved; a new file gets `0644`.
@@ -220,6 +232,8 @@ to a sibling inside the tree (readable), `.env`, `.git/config`, a PNG, a
 | `list_dir` | optional `path` (default: root) | `read files` | names, one per line, directories with `/`; `target/`, `.git/`, `node_modules/` skipped |
 | `edit_file` | `path`, `old_string`, `new_string`, optional `replace_all` | `edit existing files` | `applied` / `skipped` / the error |
 | `write_file` | `path`, `content` | `create new files` (and `edit existing files` to replace one) | `applied` / `skipped` / the error |
+| `move_file` | `from`, `to` | `move files` | `applied: moved …` / `skipped` / the error |
+| `delete_file` | `path` | `delete files` | `applied: deleted …` / `skipped` / the error |
 | `run_command` | `command`, optional `args`, optional `dir` | each command of the catalogue | exit code, stdout and stderr, cut at 20 kB |
 
 `edit_file` follows the shape most agents use, because small local models
@@ -230,12 +244,16 @@ more than once, the error says to add context or set `replace_all`.
 freshness rule and goes by the permission on editing.
 
 A tool is offered only when its permission is on: the model never sees a tool
-it may not use. There is no `delete`, no `rename`, no `glob` or `grep` as
-tools; `grep` and `find` exist as catalogue commands instead.
+it may not use. `move_file` and `delete_file` are tools rather than `mv` and
+`rm` for the same reason edits are: the user sees what is lost (a delete is
+shown as the whole file removed), the hash guards against a file that changed,
+and nothing recursive or overwriting exists to be asked for. What was read
+follows a move, and is forgotten after a delete. There is no `glob` or `grep`
+as tools; `grep` and `find` exist as catalogue commands instead.
 
 ## Permissions
 
-Every capability — moon's three file tools and each command of the catalogue —
+Every capability — moon's file tools and each command of the catalogue —
 has one of three states, and nothing else:
 
 | | |
@@ -246,13 +264,14 @@ has one of three states, and nothing else:
 
 Three rules, kept by `Policy` (`tools/catalog.rs`):
 
-1. **Editing and creating files ask by default, and `allow` on them is the
-   user's call.** At `allow` the harness applies the edit as it comes
+1. **Editing, creating, moving and deleting files ask by default, and
+   `allow` on them is the user's call.** At `allow` the harness applies the edit as it comes
    (`Harness::settle_or_ask`), the step line says `applied` after the fact,
    the prompt tells the model its writes land without waiting, and moon warns
    when this is set in a directory with no `.git/`.
-2. **Editing and creating need reading**, so turning either on turns `read
-   files` on, and turning `read files` off turns them off. Nothing else is
+2. **Every change to files needs reading**, so turning editing, creating,
+   moving or deleting on turns `read files` on, and turning `read files` off
+   turns them off. Nothing else is
    coupled: a command is a choice of its own.
 3. **Nothing on is tools off.** There is no separate switch.
 
@@ -262,14 +281,16 @@ included ([agents.md](agents.md)). A policy is built through
 
 **The catalogue** (`tools/catalog.rs`) is one `const` list of `Entry`: an id as
 it is shown, written in an agent file and, for a command, called (`read files`,
-`git diff`, `ls`); a `Category` (`Editor`, `Files`, `Git`, `Build`, `Docker`,
-`Network`) and, within `Build`, a section per tool; a `Kind` (`Read`, `Edit`,
-`Create`, `Subfolders`, `Command`); what it turns to when switched on
+`git diff`, `ls`); a `Category` (`Editor`, `Files`, `Git`, `Stack`, `Docker`,
+`Crypto`, `Models`, `Network`) and, within `Stack`, a section per language
+and within `Models` one per provider; a `Kind` (`Read`, `Edit`,
+`Create`, `Move`, `Delete`, `Subfolders`, `Other`, `Command`); what it turns to when switched on
 (`allow` for what only looks, `ask` for what changes the repository, writes
 files, runs the project's own code or reaches the network); a deny list of
 flags; what it `needs` (another argument that must be present, such as `-d`
-for `docker compose up`); and one line of help. Nothing outside the catalogue
-can be named, and the catalogue is in the code, not in the configuration.
+for `docker compose up`); the flags whose value is `literal`, not a path
+(`-subj /CN=localhost` for `openssl req`); and one line of help. The catalogue is in the code, not in the
+configuration. The one way past its list is `other programs`, below.
 
 `Editor` holds moon's own three file tools, which stay tools rather than
 commands: `read_file` carries the `<file>` block, the range and the hash the
@@ -295,16 +316,38 @@ internet.
   "--stat"]` both work, and `git status` is refused while it is off.
 - Every remaining token goes through a lexical check — no absolute path, no
   `~`, no drive letter, no `..` component, the value of a `--flag=value`
-  included — and through the sandbox's deny rules by name, so `cat .env` and
-  `git diff ../x` never start.
+  included, and what follows a `file:` or `file://` prefix, so
+  `-passin file:/…` is a path too — and through the sandbox's deny rules by
+  name, so `cat .env` and `git diff ../x` never start. The one token after a
+  `literal` flag skips the lexical check, not the deny rules.
+- A URL given to a `Network` command is `http://` or `https://`: `curl
+  file:///etc/passwd` or `scp://` would read what the path check keeps out.
 - The entry's deny list refuses the flags that would run something else or
   write somewhere (`find -exec`, `git --exec-path`, `git --output`,
-  `make --eval`, `cargo --config`, `curl -d`, `docker -H`), and its `needs`
+  `make --eval`, `cargo --config`, `curl -d`, `docker -H`, `openssl
+  -engine`), and its `needs`
   must be met.
 - The program is resolved on `PATH` at call time, with `PATHEXT` on Windows;
   the coreutils on Windows are looked for next to `git.exe` only
   (`<Git>/usr/bin`), never in `System32`, whose `find` is another program.
 - `Exec.asks` is the permission in force, not the catalogue's default.
+
+**Other programs.** `other programs` (in `Editor`, `off` or `ask`: `allow`
+is turned into `ask`) lets a call name a program the catalogue does not list,
+or one it lists and has off. It keeps every check above and adds two:
+
+- The program is a bare name looked for on `PATH`: no path, no `./script`,
+  no drive. Shells and what runs another program in its place (`sh`, `bash`,
+  `cmd`, `pwsh`, `env`, `xargs`, `sudo`, `timeout`, `ssh`… — `NEVER_RUN`) are
+  refused even asking, since they would carry a command past the argument
+  checks.
+- The catalogue still has a say (`rules_for`): an entry whose words open the
+  call, on or off, gives its deny list, its `needs` and its literal flags;
+  otherwise the entry of the same program that refuses least gives its deny
+  list, so `git push --exec-path` is refused like `git diff --exec-path`.
+
+Every such call `asks`, whatever the rest of the agent allows; `Exec.name` is
+the program, for the approval panel.
 
 **Running it.** The harness hands back `Command::Run(Exec)` and pauses. The
 interface runs it on a thread of its own (`run_command::execute`: no shell,
@@ -321,13 +364,27 @@ prompt says there is no shell.
 ## The interface
 
 - **The marker.** The permanent sign that the model can act is on the bottom
-  row, left side, in `moon-soft`: the agent's name and what it may do,
-  `⏵⏵ committer · Read · Edit · 4 commands`, or `⏵ default · all off` when
-  nothing is on. The same convention Claude Code uses for its mode indicators.
+  row, left side: only `⏵⏵` and the agent's name, in `moon-soft` and bold while it has
+  permissions, muted when nothing is on. What it may do lives in `/agent`.
 - **Steps.** One muted line per tool call, hanging from the message with `⎿`:
   `⎿  read  src/a.rs`, `⎿  ✎ edit  src/a.rs  +3 −1  applied`,
   `⎿  run   git diff --stat`. A failure is visible where it happened, with
-  `✗` and the reason.
+  `✗` and the reason. Under an applied edit, new file or delete, its diff
+  stays in the conversation as the approval showed it, cut at 30 rows with
+  `… N more lines`; a skipped one leaves only the line.
+- **Diffs.** One line number — the file as it is for a removed line, as it
+  will be for the rest — then `-` or `+`, then the line colored by its kind
+  of file (the same classes as the code blocks: keywords in `moon-soft`,
+  strings in `moon`, comments in `ink-muted`). A removed row sits on
+  `alert-bg` and an added one on `ok-bg`, out to the right edge; `...`
+  between hunks:
+
+  ```
+   513   /// fit goes on the next line
+   514 - fn tools_lines(.., width: usize)
+   514 + fn tools_lines(.., max: usize)
+  ...
+  ```
 - **Approval.** A panel docked under the conversation, in the input box's
   place: the title (`Edit file`, `Create file`, `Run command`) with the counts
   or the folder on the right, the file or the command under it, the diff or
@@ -385,7 +442,8 @@ refuses.
 
 ## What this does not protect against
 
-The sandbox stops the model from running anything outside the catalogue. It
+The sandbox stops the model from running anything outside the catalogue
+without your ok (`other programs` asks every time). It
 cannot stop it from writing a file that **you** — or a command it may run —
 will execute later: a `Makefile`, `build.rs`, `.cargo/config.toml` (a
 `runner` or a `rustc-wrapper`), a git hook, a CI workflow, `package.json`
@@ -489,6 +547,16 @@ recorded here rather than slipped in.
   for one thing. Now the agents folder is the whole truth, `tools.toml` is
   read once into `default.toml` and gone, files are brought up to the
   catalogue on every start, and `moon config reset` starts over.
+- **2026-09-30 — other programs, asking.** A fixed catalogue always lacks
+  the command a project needs. `other programs` lets the model name any
+  program on `PATH`, never a shell, always shown first; the catalogue stays
+  the list of what may run without asking. It reverses "nothing outside the
+  catalogue" below on purpose, at the user's request.
+- **2026-09-30 — moving and deleting files.** Two more tools, `move_file`
+  and `delete_file`, each with its permission in `Editor` (`ask` by
+  default). They are tools and not `mv`/`rm` so the user sees what goes, the
+  hash guards a delete, and nothing recursive or overwriting can be asked
+  for.
 - **2026-09-28 — an agent carries its permissions whole.** The two-layer
   intersection was dropped as confusing; `default` runs on `tools.toml`, every
   other agent on its own file, and `/tools` became an alias for the chosen
@@ -497,7 +565,7 @@ recorded here rather than slipped in.
 
 ## Not done, on purpose
 
-- A shell, or any way to run something outside the catalogue.
+- A shell, or any way to run something outside the catalogue without asking.
 - Tools in `moon ask`.
 - Undo of applied edits from inside moon: git is the safety net, and moon says
   so when there is none.

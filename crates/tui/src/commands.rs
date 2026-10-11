@@ -54,8 +54,8 @@ pub const SPECS: &[Spec] = &[
     },
     Spec {
         name: "copy",
-        args: "",
-        help: "copy the last reply to the clipboard",
+        args: "[code [n]]",
+        help: "copy the last reply to the clipboard; code copies its last code block, code 2 the second",
     },
     Spec {
         name: "retry",
@@ -88,9 +88,19 @@ pub const SPECS: &[Spec] = &[
         help: "what the model sees: context file, attached files, token budget",
     },
     Spec {
+        name: "thinking",
+        args: "",
+        help: "show or hide the model's reasoning over its replies",
+    },
+    Spec {
         name: "machine",
         args: "",
         help: "cpu, ram and swap drawn over the last 3 minutes",
+    },
+    Spec {
+        name: "version",
+        args: "",
+        help: "moon's version, and whether a newer one is out",
     },
     Spec {
         name: "help",
@@ -174,7 +184,7 @@ pub enum Command {
     Sessions,
     Save(Option<String>),
     Export(Option<String>),
-    Copy,
+    Copy(CopyTarget),
     Retry,
     Undo,
     Files,
@@ -183,10 +193,20 @@ pub enum Command {
     /// Who talks to the model: the picker of agent definitions.
     Agent,
     Context,
+    Thinking,
     /// The machine drawn: cpu and ram over the window `sysmon` keeps.
     Machine,
+    Version,
     Help,
     Quit,
+}
+
+/// What `/copy` takes from the last reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyTarget {
+    Reply,
+    /// A code block: the last one, or the n-th counting from 1.
+    Code(Option<usize>),
 }
 
 /// `input` starts with `/`.
@@ -213,7 +233,7 @@ pub fn parse(input: &str) -> Result<Command, String> {
         "sessions" | "resume" => Command::Sessions,
         "save" => Command::Save(arg()),
         "export" => Command::Export(arg()),
-        "copy" => Command::Copy,
+        "copy" => Command::Copy(parse_copy(rest)?),
         "retry" => Command::Retry,
         "undo" => Command::Undo,
         // `/add` and `/drop` were two commands with arguments; now they are
@@ -223,12 +243,28 @@ pub fn parse(input: &str) -> Result<Command, String> {
         "tools" | "edit" | "edits" => Command::Tools,
         "agent" | "agents" => Command::Agent,
         "context" | "ctx" => Command::Context,
+        "thinking" | "reasoning" | "think" => Command::Thinking,
         "machine" => Command::Machine,
+        "version" | "v" => Command::Version,
         "help" | "?" => Command::Help,
         "quit" | "exit" | "q" => Command::Quit,
         "" => return Err("type a command after the slash; /help lists them".into()),
         other => return Err(format!("unknown command: /{other} (try /help)")),
     })
+}
+
+/// The arguments of `/copy`: nothing, `code`, or `code` and a block number.
+fn parse_copy(rest: &str) -> Result<CopyTarget, String> {
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    match words.as_slice() {
+        [] => Ok(CopyTarget::Reply),
+        ["code"] => Ok(CopyTarget::Code(None)),
+        ["code", n] => match n.parse::<usize>() {
+            Ok(n) if n > 0 => Ok(CopyTarget::Code(Some(n))),
+            _ => Err(format!("/copy code takes a block number from 1, not {n}")),
+        },
+        _ => Err("usage: /copy · /copy code · /copy code 2".into()),
+    }
 }
 
 /// Commands whose name starts with `prefix` (without the slash), in `SPECS` order.
@@ -254,6 +290,8 @@ mod tests {
         // come after it is not a model to pick
         assert_eq!(parse("/model"), Ok(Command::Model));
         assert_eq!(parse("/machine"), Ok(Command::Machine));
+        assert_eq!(parse("/version"), Ok(Command::Version));
+        assert_eq!(parse("/reasoning"), Ok(Command::Thinking));
         assert!(parse("/cpu").is_err());
         assert_eq!(parse("/model qwen"), Ok(Command::Model));
         assert_eq!(parse("/m"), Ok(Command::Model));
@@ -268,6 +306,23 @@ mod tests {
         );
         assert!(parse("/nope").is_err());
         assert!(parse("/").is_err());
+    }
+
+    #[test]
+    fn parses_copy() {
+        assert_eq!(parse("/copy"), Ok(Command::Copy(CopyTarget::Reply)));
+        assert_eq!(
+            parse("/copy code"),
+            Ok(Command::Copy(CopyTarget::Code(None)))
+        );
+        assert_eq!(
+            parse("/copy  code  2 "),
+            Ok(Command::Copy(CopyTarget::Code(Some(2))))
+        );
+        assert!(parse("/copy code 0").is_err());
+        assert!(parse("/copy code two").is_err());
+        assert!(parse("/copy code 1 2").is_err());
+        assert!(parse("/copy all").is_err());
     }
 
     #[test]

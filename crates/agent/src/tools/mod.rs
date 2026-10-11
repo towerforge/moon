@@ -1,9 +1,10 @@
-//! What an agent can do. A closed enum: no delete, no network, and no shell.
-//! `run_command` runs one of the commands of a fixed catalogue, the ones
-//! that the agent's file turns on, as a program with its arguments, never through a
-//! shell. Every tool goes through the sandbox for its paths; the two that
-//! write only *prepare* an edit, and the harness applies it once the user
-//! says so; a command set to `ask` waits the same way.
+//! What an agent can do. A closed enum, and no shell. `run_command` runs one
+//! of the commands of a fixed catalogue, the ones that the agent's file
+//! turns on, as a program with its arguments, never through a shell. Every
+//! tool goes through the sandbox for its paths; the four that change files
+//! (edit, write, move, delete) only *prepare* the change, and the harness
+//! applies it once the user says so; a command set to `ask` waits the same
+//! way.
 
 use std::collections::HashMap;
 
@@ -13,9 +14,11 @@ use serde_json::Value;
 use crate::sandbox::{Denied, Eol, Sandbox};
 
 pub mod catalog;
+pub mod delete_file;
 mod diff;
 pub mod edit_file;
 pub mod list_dir;
+pub mod move_file;
 pub mod read_file;
 pub mod run_command;
 #[cfg(test)]
@@ -32,15 +35,19 @@ pub enum Tool {
     ListDir,
     EditFile,
     WriteFile,
+    MoveFile,
+    DeleteFile,
     RunCommand,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 5] = [
+    pub const ALL: [Tool; 7] = [
         Tool::ReadFile,
         Tool::ListDir,
         Tool::EditFile,
         Tool::WriteFile,
+        Tool::MoveFile,
+        Tool::DeleteFile,
         Tool::RunCommand,
     ];
 
@@ -50,6 +57,8 @@ impl Tool {
             Tool::ListDir => "list_dir",
             Tool::EditFile => "edit_file",
             Tool::WriteFile => "write_file",
+            Tool::MoveFile => "move_file",
+            Tool::DeleteFile => "delete_file",
             Tool::RunCommand => "run_command",
         }
     }
@@ -60,16 +69,22 @@ impl Tool {
 
     /// Whether it changes the disk, and so waits for the user.
     pub fn writes(self) -> bool {
-        matches!(self, Tool::EditFile | Tool::WriteFile)
+        matches!(
+            self,
+            Tool::EditFile | Tool::WriteFile | Tool::MoveFile | Tool::DeleteFile
+        )
     }
 
-    /// The verb for the step line: `read`, `list`, `edit`, `write`, `run`.
+    /// The verb for the step line: `read`, `list`, `edit`, `write`, `move`,
+    /// `delete`, `run`.
     pub fn verb(self) -> &'static str {
         match self {
             Tool::ReadFile => "read",
             Tool::ListDir => "list",
             Tool::EditFile => "edit",
             Tool::WriteFile => "write",
+            Tool::MoveFile => "move",
+            Tool::DeleteFile => "delete",
             Tool::RunCommand => "run",
         }
     }
@@ -82,6 +97,8 @@ impl Tool {
             Tool::ListDir => list_dir::spec(),
             Tool::EditFile => edit_file::spec(),
             Tool::WriteFile => write_file::spec(),
+            Tool::MoveFile => move_file::spec(),
+            Tool::DeleteFile => delete_file::spec(),
             Tool::RunCommand => {
                 let (d, p) = run_command::spec(&Policy::default());
                 return ToolSpec {
@@ -129,25 +146,55 @@ pub struct Seen {
 
 pub type SeenFiles = HashMap<String, Seen>;
 
-/// A write the model asked for, checked and diffed, waiting for the user.
+/// A change the model asked for, checked and diffed, waiting for the user:
+/// an edit, a new file, a move (`to` set, no diff) or a delete (the file's
+/// text all removed).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingEdit {
     pub tool: Tool,
-    /// Relative, `/`-separated.
+    /// Relative, `/`-separated; for a move, where it comes from.
     pub path: String,
+    /// Where a move goes.
+    pub to: Option<String>,
     pub before: String,
     pub after: String,
     pub eol: Eol,
     pub bom: bool,
-    /// Hash the file must still carry when applied; `None` for a new file.
+    /// Hash the file must still carry when applied; `None` for a new file,
+    /// a move and an empty folder.
     pub expect: Option<u64>,
     pub diff: Diff,
 }
 
 impl PendingEdit {
     /// Writes it. Returns the file's new hash for the harness to remember.
+    /// Only for an edit or a new file; a move and a delete go by `carry_out`.
     pub fn apply(&self, sandbox: &Sandbox) -> Result<u64, Denied> {
         sandbox.write(&self.path, &self.after, self.eol, self.bom, self.expect)
+    }
+
+    /// Does it, whatever it is: the new hash of a file written, `None` for a
+    /// move or a delete, which leave no file to remember at this path. The
+    /// checks run again first: the disk may have changed while the user
+    /// looked.
+    pub fn carry_out(&self, sandbox: &Sandbox) -> Result<Option<u64>, Denied> {
+        match self.tool {
+            Tool::MoveFile => {
+                let to = self.to.as_deref().unwrap_or_default();
+                sandbox.move_path(&self.path, to, true).map(|()| None)
+            }
+            Tool::DeleteFile => sandbox.remove(&self.path, self.expect).map(|()| None),
+            _ => self.apply(sandbox).map(Some),
+        }
+    }
+
+    /// What it acts on, as the step line and the panel show it: the path, or
+    /// `from → to` for a move.
+    pub fn subject(&self) -> String {
+        match &self.to {
+            Some(to) => format!("{} → {to}", self.path),
+            None => self.path.clone(),
+        }
     }
 
     /// `+3 −1`, for the step line and the panel title.
@@ -163,11 +210,18 @@ pub(crate) fn args<T: serde::de::DeserializeOwned>(tool: Tool, v: &Value) -> Res
         .map_err(|e| ToolError::Usage(format!("{}: bad arguments: {e}", tool.name())))
 }
 
-/// The `path` argument of a call, for the step line even when the call failed.
+/// The `path` argument of a call, for the step line even when the call
+/// failed; `from → to` for a move.
 pub fn path_of(sandbox: &Sandbox, arguments: &Value) -> String {
-    arguments
-        .get("path")
-        .and_then(Value::as_str)
-        .map(|p| sandbox.relative(p).unwrap_or_else(|_| p.to_string()))
-        .unwrap_or_else(|| "?".to_string())
+    let rel = |key: &str| {
+        arguments
+            .get(key)
+            .and_then(Value::as_str)
+            .map(|p| sandbox.relative(p).unwrap_or_else(|_| p.to_string()))
+    };
+    match (rel("path"), rel("from"), rel("to")) {
+        (Some(p), _, _) => p,
+        (None, Some(from), Some(to)) => format!("{from} → {to}"),
+        _ => "?".to_string(),
+    }
 }

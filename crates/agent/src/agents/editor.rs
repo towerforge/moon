@@ -37,7 +37,6 @@ indentation included; it must occur once.
 - To create a file, or to fill an empty one, call write_file with the whole content.
 - If a request leaves out something a call needs, such as a file name, choose a \
 sensible one and say which.
-- You cannot delete or rename files.
 
 When a request is done, say in one sentence what you changed.";
 

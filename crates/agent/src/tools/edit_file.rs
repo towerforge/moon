@@ -63,6 +63,7 @@ pub fn prepare(
         return Ok(PendingEdit {
             tool: Tool::EditFile,
             path: rel,
+            to: None,
             diff: diff(&cur.text, &new),
             before: cur.text,
             after: new,
@@ -103,6 +104,7 @@ pub fn prepare(
     Ok(PendingEdit {
         tool: Tool::EditFile,
         path: rel,
+        to: None,
         diff: diff(&cur.text, &after),
         before: cur.text,
         after,

@@ -2,7 +2,24 @@
 
 ## On screen
 
-From top to bottom: a header with the crescent, the version, the active model and the directory you started in; the conversation; a status line; the input box; and a row of hints.
+From top to bottom: the top row; the conversation; a status line; the input box — empty and before the first request, it suggests in grey `Try "how do I log an error?"`, gone with the first key and for good once something is sent —; and the bottom row. The model is in the bottom row, and the notes of the start (a default configuration, a provider not answering, a newer moon) go into the conversation as lines of their own.
+
+The **top row** stays put while the conversation scrolls, with no rule under it. On the left, `moon`, its version — followed by `↑ v0.6.0` when the daily check found a newer one; `/version` says the same at any time — and the directory moon started in. On the right, the machine, one reading after another, the value and after `▲` the peak of the last 3 minutes, `gpu` only with a card of its own and `swap` only when in use. On a narrow terminal the directory gives way first:
+
+```
+ moon v0.5.0 ↑ v0.6.0 · ~/Towerforge/moon       cpu 34% ▲61 · ram 57% ▲75 · gpu 12% ▲30 · swap 1.2G
+```
+
+- `cpu` and `ram` are sampled every 5 seconds, and twice a second while the model is thinking or answering or the `/machine` panel is open.
+- On a machine with a graphics card of its own, `gpu` is its memory, read through NVML on NVIDIA (the library behind `nvidia-smi`, if it is installed) and through the `amdgpu` driver on AMD. On a Mac there is no such reading: the GPU shares the RAM, which is already there.
+- On Linux, `ram` counts the loaded model in. The kernel files a model mapped from disk under cache and leaves it out of what it calls used, so `free` and `htop` can show a machine half empty with a 20 GB model on it; moon adds what the model keeps in RAM (from Ollama's `/api/ps`) so the number means what you expect. macOS already counts it.
+- `system_stats = false` turns the readings off; the row stays, with moon and the directory. Under 12 rows of terminal it goes to the conversation.
+
+When a turn ends — done, cancelled or stopped — and the model used any tool, a line under the reply says what it used and how many times, in order of first use, by the command the catalogue names or the file tool's verb; what does not fit goes on the next line, under the first tool:
+
+```
+─── 6 tools ── read ×3 · git diff ×2 · edit ×1
+```
 
 The **bottom panel** is where every list lives: models, sessions, files, agents and their permissions, the help, and the approvals for what the model wants to do. It unfolds under the conversation, in the input box's place, and the box comes back when it closes. Nothing floats over what you are reading and nothing paints a surface of its own:
 
@@ -33,18 +50,15 @@ The **bottom panel** is where every list lives: models, sessions, files, agents 
 
 The **status line** has two halves. On the left, what is happening now: `generating (12s · ↑ ~3.2k · ↓ 640 tokens · 38 tok/s) · esc to cancel`, then the wrap-up `✓ done (…)` or `✗ cancelled (…)` with the real token counts. On the right, `context 8%`, how much of the context window the last exchange filled (it turns `moon-soft` at 80 %, when models start to forget the beginning), and the session total: generation time and tokens sent and received. With Ollama the window counted is the one the model is loaded with — your `num_ctx`, not the one the model declares — because that is the one that truncates.
 
-The **bottom row** starts with the agent and what it may do — `⏵⏵ reviewer · Read · 5 commands`, or `⏵ default · all off` — then the hints for the current situation and, on the right, the active model and the machine:
+The **bottom row** has on the left `⏵⏵` and the agent's name — `⏵⏵ reviewer`, in `moon-soft` and bold while it has permissions, muted when they are all off; what it may do is in `/agent` — then `/agent · /model`, and, on the right, the active model and what it takes up:
 
 ```
-qwen2.5-coder:14b · 12.1G · cpu 34% ▲61 · ram 57% ▲75
+qwen2.5-coder:14b · 12.1G
 ```
 
 - `12.1G` is what the model takes in memory: weights plus the context cache, so it depends on `num_ctx` as much as on the model. If it is there, the model is loaded. If it is missing, the next request pays the loading time. Only Ollama can report this.
 - If the model does not fit in the GPU, `30% cpu` appears in bold: that is when generation crawls.
-- `cpu` and `ram` are sampled every 5 seconds, and twice a second while the model is thinking or answering or the `/machine` panel is open. After `▲`, the peak of the last 3 minutes. `swap 1.2G` appears only when swap is in use.
-- On a machine with a graphics card of its own, `gpu 78% ▲90` follows: its memory, read through NVML on NVIDIA (the library behind `nvidia-smi`, if it is installed) and through the `amdgpu` driver on AMD. On a Mac there is no such line: the GPU shares the RAM, which is already there.
-- On Linux, `ram` counts the loaded model in. The kernel files a model mapped from disk under cache and leaves it out of what it calls used, so `free` and `htop` can show a machine half empty with a 20 GB model on it; moon adds what the model keeps in RAM (from Ollama's `/api/ps`) so the number means what you expect. macOS already counts it.
-- Below 120 columns the peaks and the model size go; below 90, the whole block. `system_stats = false` turns the machine readings off.
+- Below 120 columns the size goes.
 
 `/context` prints the same in gigabytes, with the split between weights and context cache and how long until Ollama unloads the model.
 
@@ -52,7 +66,7 @@ qwen2.5-coder:14b · 12.1G · cpu 34% ▲61 · ram 57% ▲75
 
 ## Agents and permissions
 
-`/agent` lists the agents, one file each in `~/.config/moon/agents/`: `default`, which every conversation starts with, the sample `reviewer`, and your own. `Enter` picks one for the conversation; `ctrl+t` opens its permissions, `ctrl+e` its prompt, and `ctrl+a`, `ctrl+r` and `ctrl+d` create, rename and delete. With a permission at `ask`, what the model wants to do — an edit with its diff, a command line — opens under the conversation and waits for `1` (yes) or `2` (no). Everything about it is in [tools.md](tools.md).
+`/agent` lists the agents, one file each in `~/.config/moon/agents/`: `default`, which every conversation starts with, the sample `reviewer`, and your own. `Enter` picks one for the conversation; `ctrl+t` opens its permissions, `ctrl+e` its prompt, and `ctrl+a`, `ctrl+r` and `ctrl+d` create, rename and delete. With a permission at `ask`, what the model wants to do — an edit with its diff, a command line — opens under the conversation and waits for `1` (yes) or `2` (no). The diff has one line number, then `-` or `+`, the removed rows on dark red and the added ones on dark green, the code colored by its kind of file; once applied it stays in the conversation under the step, cut at 30 rows. Everything about it is in [tools.md](tools.md).
 
 ## Files in the context
 
@@ -91,10 +105,12 @@ Type `/` and the matching commands are suggested; `Tab` completes. `/help` lists
 | `/sessions` | resume a saved conversation (also `ctrl+s`) |
 | `/new` · `/clear` | a new conversation · clear the view and keep the conversation |
 | `/save [name]` · `/export [path.md]` | rename the conversation · write it as Markdown |
-| `/retry` · `/undo` · `/copy` | regenerate the last reply · drop the last exchange · copy the last reply |
+| `/retry` · `/undo` · `/copy [code [n]]` | regenerate the last reply · drop the last exchange · copy the last reply, or with `code` its last code block (`code 2`: the second) |
 | `/system [text]` | show or set the system prompt |
 | `/params key=value …` | generation parameters for this session |
+| `/thinking` | show or hide the reasoning some models send before the reply; folded, one grey line says how long it was |
 | `/machine` | CPU, RAM and GPU drawn over the last three minutes |
+| `/version` | moon's version and, when the daily check found one, the newer one |
 | `/help` · `/quit` | |
 
 ## The CLI

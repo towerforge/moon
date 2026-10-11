@@ -44,6 +44,36 @@ const SENT_MOON: SynColor = SynColor {
     a: 255,
 };
 
+/// The color of the palette a sentinel stands for.
+fn sentinel_color(c: SynColor, theme: &Theme) -> ratatui::style::Color {
+    match c {
+        c if c == SENT_MUTED => theme.ink_muted,
+        c if c == SENT_SOFT => theme.moon_soft,
+        c if c == SENT_MOON => theme.moon,
+        _ => theme.ink,
+    }
+}
+
+/// The code blocks of a reply, in order and without their fences, as they
+/// would be pasted. A fence left open — a reply cut short — still counts.
+pub fn code_blocks(md: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current: Option<String> = None;
+    for ev in Parser::new_ext(md, Options::empty()) {
+        match ev {
+            Event::Start(Tag::CodeBlock(_)) => current = Some(String::new()),
+            Event::Text(text) => {
+                if let Some(block) = current.as_mut() {
+                    block.push_str(&text);
+                }
+            }
+            Event::End(TagEnd::CodeBlock) => blocks.extend(current.take()),
+            _ => {}
+        }
+    }
+    blocks
+}
+
 pub struct Renderer {
     syntaxes: SyntaxSet,
     syn_theme: SynTheme,
@@ -88,6 +118,46 @@ impl Renderer {
         w.finish()
     }
 
+    /// The lines of a file colored by its extension, or by its name for a
+    /// `Makefile`: the text of each piece and its color, nothing else, for
+    /// a diff to lay over its own background. `None` for a kind of file
+    /// syntect does not know. The lines go through in order, so what one
+    /// opens — a block comment, a string — carries to the next.
+    pub fn code_lines(
+        &self,
+        path: &str,
+        lines: &[&str],
+        theme: &Theme,
+    ) -> Option<Vec<Vec<(String, ratatui::style::Color)>>> {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let syntax = name
+            .rsplit_once('.')
+            .and_then(|(_, ext)| self.syntaxes.find_syntax_by_extension(ext))
+            .or_else(|| self.syntaxes.find_syntax_by_extension(name))?;
+        let mut hl = HighlightLines::new(syntax, &self.syn_theme);
+        Some(
+            lines
+                .iter()
+                .map(|l| {
+                    let line = format!("{l}\n");
+                    match hl.highlight_line(&line, &self.syntaxes) {
+                        Ok(pieces) => pieces
+                            .into_iter()
+                            .map(|(st, text)| {
+                                (
+                                    text.trim_end_matches('\n').to_string(),
+                                    sentinel_color(st.foreground, theme),
+                                )
+                            })
+                            .filter(|(text, _)| !text.is_empty())
+                            .collect(),
+                        Err(_) => vec![(l.to_string(), theme.ink)],
+                    }
+                })
+                .collect(),
+        )
+    }
+
     fn highlight(&self, lang: &str, code: &str, theme: &Theme) -> Vec<Line<'static>> {
         let bg = theme.raised();
         let syntax = if lang.is_empty() {
@@ -110,12 +180,7 @@ impl Renderer {
                 Ok(pieces) => pieces
                     .into_iter()
                     .map(|(st, text)| {
-                        let fg = match st.foreground {
-                            c if c == SENT_MUTED => theme.ink_muted,
-                            c if c == SENT_SOFT => theme.moon_soft,
-                            c if c == SENT_MOON => theme.moon,
-                            _ => theme.ink,
-                        };
+                        let fg = sentinel_color(st.foreground, theme);
                         Span::styled(text.trim_end_matches('\n').to_string(), bg.fg(fg))
                     })
                     .collect(),
@@ -541,6 +606,16 @@ mod tests {
             .spans
             .iter()
             .all(|s| s.style.bg == Some(t.night_raised)));
+    }
+
+    #[test]
+    fn code_blocks_in_order_without_fences() {
+        let md = "Run:\n\n```sh\ncargo test\n```\n\nthen `inline` and\n\n~~~\na\n\nb\n~~~\n\n- item\n\n  ```rs\n  fn f() {}\n  ```\n\n```py\nprint(1)";
+        assert_eq!(
+            code_blocks(md),
+            vec!["cargo test\n", "a\n\nb\n", "fn f() {}\n", "print(1)"]
+        );
+        assert!(code_blocks("no code, only `inline`").is_empty());
     }
 
     #[test]

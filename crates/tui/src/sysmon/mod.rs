@@ -192,6 +192,14 @@ impl History {
         self.samples.iter().map(|(_, s)| s.gpu).fold(0.0, f32::max)
     }
 
+    pub fn peak_swap(&self) -> u64 {
+        self.samples
+            .iter()
+            .map(|(_, s)| s.swap_used)
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Points for a chart, oldest first: on `x`, seconds from now (negative,
     /// down to `-WINDOW`); on `y`, what `value` reads from the sample.
     pub fn series_at(&self, now: Instant, value: impl Fn(&Sample) -> f32) -> Vec<(f64, f64)> {

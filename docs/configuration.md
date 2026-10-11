@@ -30,7 +30,7 @@ mouse            = true       # wheel scrolls and drag selects; false leaves sel
 save_sessions    = true
 context_file     = "MOON.md"  # project context file; "" for none
 max_attachment_bytes = 200000 # bigger @files are truncated
-system_stats     = true       # cpu, ram and gpu at the bottom right
+system_stats     = true       # cpu, ram, gpu and swap on the top row
 update_check     = false      # ask github once a day for a newer moon and say so at startup
 
 [params]                      # defaults for every model; /params overrides them per session
@@ -89,7 +89,7 @@ enabled  = false                      # kept in the file, ignored at runtime
 
 ## Theme
 
-moon draws with ten tokens from the Moon design system and one brand color. It uses truecolor when the terminal announces it (`COLORTERM=truecolor` or `24bit`) and the nearest 256-color palette otherwise.
+moon draws with twelve tokens from the Moon design system and one brand color. It uses truecolor when the terminal announces it (`COLORTERM=truecolor` or `24bit`) and the nearest 256-color palette otherwise.
 
 | Token | Default | Used for |
 |---|---|---|
@@ -103,8 +103,10 @@ moon draws with ten tokens from the Moon design system and one brand color. It u
 | `on-moon` | `#1c1c29` | text on a `moon` fill |
 | `ok` | `#8fd9a0` | `✓ done` |
 | `alert` | `#ff8f8f` | `✗ cancelled` |
+| `ok-bg` | `#1f3b2c` | the rows a diff adds |
+| `alert-bg` | `#4a2229` | the rows a diff removes |
 
-moon never paints the background: your terminal's own shows through, and the tokens are picked to sit on top of it.
+moon never paints the background, but for the rows of a diff: your terminal's own shows through, and the tokens are picked to sit on top of it.
 
 ## Logging
 

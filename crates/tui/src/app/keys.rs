@@ -602,6 +602,7 @@ impl App {
             return;
         }
         self.input.clear();
+        self.sent = true;
         self.hist_idx = None;
         self.draft.clear();
         if self.history.last() != Some(&text) {

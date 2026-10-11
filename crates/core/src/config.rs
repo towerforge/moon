@@ -32,7 +32,7 @@ pub struct GeneralConfig {
     pub context_file: String,
     /// Maximum size of an attachment; anything above it is truncated.
     pub max_attachment_bytes: usize,
-    /// Machine CPU and RAM at the bottom right: every 5 s, every second while the model is working.
+    /// Machine CPU, RAM, GPU and swap on the top row: every 5 s, every second while the model is working.
     pub system_stats: bool,
     /// Ask GitHub once a day whether there is a newer moon and say so at
     /// startup. Off by default: the only traffic moon makes is to the
@@ -87,10 +87,13 @@ pub mod ids {
     pub const READ_FILES: &str = "read files";
     pub const EDIT_FILES: &str = "edit existing files";
     pub const CREATE_FILES: &str = "create new files";
+    pub const MOVE_FILES: &str = "move files";
+    pub const DELETE_FILES: &str = "delete files";
     pub const SUBFOLDERS: &str = "commands in subfolders";
     /// What `SUBFOLDERS` was called before it left the `Files` group; a
     /// file that still says it means the same.
     pub const SUBFOLDERS_OLD: &str = "run inside subfolders";
+    pub const OTHER_PROGRAMS: &str = "other programs";
 }
 
 /// The model acting on the project: the two limits every agent runs under,

@@ -7,8 +7,9 @@
 //! - `agents/`: who talks to the model. A prompt and a set of tools: the
 //!   `editor`, and the `reader` that only looks.
 //! - `tools/`: what an agent can do. A closed enum: `read_file`, `list_dir`,
-//!   `edit_file`, `write_file` and `run_command`, which runs one of the
-//!   commands of a fixed catalogue, the ones the agent's file turns on,
+//!   `edit_file`, `write_file`, `move_file`, `delete_file` and
+//!   `run_command`, which runs one of the commands of a fixed catalogue, the
+//!   ones the agent's file turns on, or another program with the user's ok,
 //!   with no shell in between.
 //! - `sandbox/`: the boundary. Every tool turns the model's string into a
 //!   path through it, and the path stays under the start-up directory.

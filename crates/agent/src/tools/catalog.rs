@@ -1,14 +1,17 @@
 //! What the model may be allowed to do, in one catalogue: moon's own file
 //! tools and a fixed list of commands, in groups, each with a permission
-//! the agent's file sets: off, ask or allow. Nothing outside the
-//! catalogue can be named, and no shell is ever involved: a command runs
+//! the agent's file sets: off, ask or allow. Outside it, only `other
+//! programs`, which always asks; no shell is ever involved: a command runs
 //! as a program with its arguments as a list, from a folder inside the
 //! project.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use moon_core::config::ids::{CREATE_FILES, EDIT_FILES, READ_FILES, SUBFOLDERS, SUBFOLDERS_OLD};
+use moon_core::config::ids::{
+    CREATE_FILES, DELETE_FILES, EDIT_FILES, MOVE_FILES, OTHER_PROGRAMS, READ_FILES, SUBFOLDERS,
+    SUBFOLDERS_OLD,
+};
 use moon_core::Permission;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,16 +26,23 @@ pub enum Category {
     /// Python.
     Stack,
     Docker,
+    /// Secrets, hashes, keys and certificates: `openssl` by subcommand.
+    Crypto,
+    /// Language models, local and in the cloud: `ollama` and `openai` by
+    /// subcommand, in sections.
+    Models,
     Network,
 }
 
 impl Category {
-    pub const ALL: [Category; 6] = [
+    pub const ALL: [Category; 8] = [
         Category::Editor,
         Category::Files,
         Category::Git,
         Category::Stack,
         Category::Docker,
+        Category::Crypto,
+        Category::Models,
         Category::Network,
     ];
 
@@ -43,6 +53,8 @@ impl Category {
             Category::Git => "Git",
             Category::Stack => "Stack",
             Category::Docker => "Docker",
+            Category::Crypto => "Crypto",
+            Category::Models => "Models",
             Category::Network => "Network",
         }
     }
@@ -52,7 +64,7 @@ impl Category {
     pub fn about(self) -> &'static str {
         match self {
             Category::Editor => {
-                "moon's own tools, and how the model's calls run: files read and changed with a diff, commands in subfolders, the step limit"
+                "moon's own tools, and how the model's calls run: files read, changed, moved and deleted with your ok, commands in subfolders, other programs, the step limit"
             }
             Category::Files => "programs that work on files, run as they are",
             Category::Git => {
@@ -64,6 +76,12 @@ impl Category {
             Category::Docker => {
                 "the project's Compose: what only looks allows, what starts, stops or runs inside asks"
             }
+            Category::Crypto => {
+                "secrets, hashes, keys and certificates: what only prints allows, what makes a key asks; what they print goes to the model"
+            }
+            Category::Models => {
+                "the models on this machine and in your OpenAI account: everything asks, what a model answers goes to the model"
+            }
             Category::Network => {
                 "what a command fetches goes to the model; flags that would send a file are refused"
             }
@@ -71,14 +89,17 @@ impl Category {
     }
 }
 
-/// Inside `Stack`, the language an entry belongs to: the panel, an agent file
-/// and the docs set each one apart under its title.
+/// Inside `Stack`, the language an entry belongs to, and inside `Models`
+/// the provider: the panel, an agent file and the docs set each one apart
+/// under its title.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     Make,
     Rust,
     Node,
     Python,
+    Ollama,
+    OpenAi,
 }
 
 impl Section {
@@ -88,6 +109,8 @@ impl Section {
             Section::Rust => "Rust",
             Section::Node => "Node",
             Section::Python => "Python",
+            Section::Ollama => "Ollama",
+            Section::OpenAi => "OpenAI",
         }
     }
 }
@@ -101,9 +124,16 @@ pub enum Kind {
     Edit,
     /// `write_file`.
     Create,
+    /// `move_file`.
+    Move,
+    /// `delete_file`.
+    Delete,
     /// Not a program: a call may carry a `dir`, a folder below the project
     /// root to run in, never one above it. Off or allow, nothing to ask.
     Subfolders,
+    /// Not a program: any program the catalogue does not list may be
+    /// called, each call shown to the user first. Off or ask, never allow.
+    Other,
     /// A program, the first word of the id, with the rest as its first
     /// arguments.
     Command,
@@ -115,7 +145,8 @@ pub struct Entry {
     /// `read files`, `git diff`, `ls`.
     pub id: &'static str,
     pub category: Category,
-    /// Its section inside `Stack`; the other groups are one list.
+    /// Its section inside `Stack` or `Models`; the other groups are one
+    /// list.
     pub section: Option<Section>,
     pub kind: Kind,
     /// What `enter` turns it to: `allow` for what only looks, `ask` for what
@@ -131,6 +162,9 @@ pub struct Entry {
     /// Flags of which one must be there, or the call is refused: `-d` for
     /// `docker compose up`, which would otherwise hold until the timeout.
     pub needs: &'static [&'static str],
+    /// Flags whose value is not a path, however it looks: `-subj
+    /// /CN=localhost` for `openssl req`.
+    pub literal: &'static [&'static str],
     pub help: &'static str,
 }
 
@@ -191,6 +225,7 @@ const fn entry(
         deny,
         coreutils,
         needs: &[],
+        literal: &[],
         help,
     }
 }
@@ -220,6 +255,12 @@ impl Entry {
         self.needs = flags;
         self
     }
+
+    /// The same entry, with `flags` taking a value that is not a path.
+    const fn literal(mut self, flags: &'static [&'static str]) -> Entry {
+        self.literal = flags;
+        self
+    }
 }
 
 const fn editor(id: &'static str, kind: Kind, on: Permission, help: &'static str) -> Entry {
@@ -247,6 +288,62 @@ const fn stack(
     help: &'static str,
 ) -> Entry {
     let mut e = entry(id, Category::Stack, Kind::Command, on, deny, false, help);
+    e.section = Some(section);
+    e
+}
+
+/// What loads code or a configuration from elsewhere, and what writes the
+/// seed file back: the same for every subcommand.
+const OPENSSL_DENY: &[&str] = &[
+    "-engine",
+    "-provider",
+    "-provider-path",
+    "-propquery",
+    "-config",
+    "-writerand",
+];
+
+const fn crypto(id: &'static str, on: Permission, help: &'static str) -> Entry {
+    entry(
+        id,
+        Category::Crypto,
+        Kind::Command,
+        on,
+        OPENSSL_DENY,
+        false,
+        help,
+    )
+}
+
+/// Not to another registry over plain HTTP.
+const OLLAMA_DENY: &[&str] = &["--insecure"];
+
+/// The key goes to OpenAI only: never to another host or through a proxy.
+const OPENAI_DENY: &[&str] = &[
+    "-b",
+    "--api-base",
+    "-p",
+    "--proxy",
+    "--azure-endpoint",
+    "--api-type",
+];
+
+/// Every one asks: what only lists still reaches a daemon or your account,
+/// and the rest downloads, deletes or spends credit.
+const fn model(id: &'static str, section: Section, help: &'static str) -> Entry {
+    let deny = match section {
+        Section::OpenAi => OPENAI_DENY,
+        _ => OLLAMA_DENY,
+    };
+    let mut e = entry(
+        id,
+        Category::Models,
+        Kind::Command,
+        Permission::Ask,
+        deny,
+        false,
+        help,
+    );
     e.section = Some(section);
     e
 }
@@ -282,6 +379,18 @@ pub const CATALOG: &[Entry] = &[
         Permission::Ask,
         "a new file you apply or skip; allow writes it without showing you",
     ),
+    editor(
+        MOVE_FILES,
+        Kind::Move,
+        Permission::Ask,
+        "a rename you apply or skip; never over a file that exists",
+    ),
+    editor(
+        DELETE_FILES,
+        Kind::Delete,
+        Permission::Ask,
+        "the file shown as removed, you apply or skip; only one it has read",
+    ),
     entry(
         SUBFOLDERS,
         Category::Editor,
@@ -290,6 +399,15 @@ pub const CATALOG: &[Entry] = &[
         &[],
         false,
         "in a folder below this one, never above it",
+    ),
+    entry(
+        OTHER_PROGRAMS,
+        Category::Editor,
+        Kind::Other,
+        Permission::Ask,
+        &[],
+        false,
+        "any program not listed here, every call shown to you first; there is no allow",
     ),
     coreutil("ls", Permission::Allow, &[], "list a folder"),
     coreutil("cat", Permission::Allow, &[], "print a file"),
@@ -508,6 +626,172 @@ pub const CATALOG: &[Entry] = &[
         Permission::Ask,
         "run a command inside a service",
     ),
+    crypto(
+        "openssl rand",
+        Permission::Allow,
+        "random bytes, `-base64 12` or `-hex 32`: a secret or a token",
+    ),
+    crypto(
+        "openssl dgst",
+        Permission::Allow,
+        "a file's hash, `-sha256`, or its HMAC",
+    ),
+    crypto(
+        "openssl base64",
+        Permission::Allow,
+        "encode to base64, or decode with `-d`",
+    ),
+    crypto(
+        "openssl x509",
+        Permission::Allow,
+        "read a certificate: `-noout -text`, `-dates`, `-subject`",
+    ),
+    crypto(
+        "openssl verify",
+        Permission::Allow,
+        "check a certificate against its chain",
+    ),
+    crypto(
+        "openssl pkey",
+        Permission::Ask,
+        "read a key, or its public half with `-pubout`; a private one goes to the model",
+    ),
+    crypto(
+        "openssl genpkey",
+        Permission::Ask,
+        "make a private key, into a file: `-out` is required",
+    )
+    .needing(&["-out"]),
+    crypto(
+        "openssl req",
+        Permission::Ask,
+        "a CSR, or a self-signed certificate with `-x509`",
+    )
+    .literal(&["-subj"]),
+    entry(
+        "shasum",
+        Category::Crypto,
+        Kind::Command,
+        Permission::Allow,
+        &[],
+        false,
+        "a file's hash, `-a 256`, or check a list with `-c`",
+    ),
+    entry(
+        "sha256sum",
+        Category::Crypto,
+        Kind::Command,
+        Permission::Allow,
+        &[],
+        false,
+        "a file's SHA-256, or check a list with `-c`",
+    ),
+    entry(
+        "uuidgen",
+        Category::Crypto,
+        Kind::Command,
+        Permission::Allow,
+        &[],
+        false,
+        "a random UUID",
+    ),
+    entry(
+        "htpasswd",
+        Category::Crypto,
+        Kind::Command,
+        Permission::Ask,
+        &[],
+        false,
+        "a basic-auth line, `-nbB user password`, or into a file",
+    ),
+    model("ollama list", Section::Ollama, "the models installed"),
+    model("ollama ps", Section::Ollama, "the models loaded in memory"),
+    model(
+        "ollama show",
+        Section::Ollama,
+        "a model's parameters, template and Modelfile",
+    ),
+    model(
+        "ollama run",
+        Section::Ollama,
+        "one prompt and its answer: `ollama run qwen3 \"…\"`",
+    ),
+    model(
+        "ollama pull",
+        Section::Ollama,
+        "download a model, often gigabytes",
+    ),
+    model("ollama stop", Section::Ollama, "unload a model from memory"),
+    model(
+        "ollama cp",
+        Section::Ollama,
+        "copy a model under another name",
+    ),
+    model(
+        "ollama rm",
+        Section::Ollama,
+        "delete a model from the machine, outside the project",
+    ),
+    model(
+        "openai api models.list",
+        Section::OpenAi,
+        "the models of your account, your fine-tunes included",
+    ),
+    model(
+        "openai api models.retrieve",
+        Section::OpenAi,
+        "a model's details: whether it exists and whose it is",
+    ),
+    model(
+        "openai api models.delete",
+        Section::OpenAi,
+        "delete one of your fine-tuned models",
+    ),
+    model(
+        "openai api files.list",
+        Section::OpenAi,
+        "the files uploaded to your account",
+    ),
+    model(
+        "openai api files.retrieve",
+        Section::OpenAi,
+        "an uploaded file's size, purpose and status",
+    ),
+    model(
+        "openai api files.delete",
+        Section::OpenAi,
+        "delete an uploaded file",
+    ),
+    model(
+        "openai api fine_tuning.jobs.list",
+        Section::OpenAi,
+        "the fine-tuning jobs, running and past",
+    ),
+    model(
+        "openai api fine_tuning.jobs.retrieve",
+        Section::OpenAi,
+        "a job's status and the model it produced",
+    ),
+    model(
+        "openai api fine_tuning.jobs.list_events",
+        Section::OpenAi,
+        "a job's log: loss, errors",
+    ),
+    model(
+        "openai api fine_tuning.jobs.cancel",
+        Section::OpenAi,
+        "stop a fine-tuning job",
+    ),
+    model(
+        "openai api chat.completions.create",
+        Section::OpenAi,
+        "one completion, `-m model -g user \"…\"`: it spends credit",
+    ),
+    network(
+        "openssl s_client",
+        OPENSSL_DENY,
+        "the certificate a host serves: `-connect host:443`",
+    ),
     network(
         "curl",
         CURL_DENY,
@@ -595,9 +879,9 @@ pub fn find(id: &str) -> Option<&'static Entry> {
 }
 
 /// The permission of every entry of the catalogue; what is not in the map
-/// is off. The one rule it keeps on its own: editing and creating files
-/// need reading, so turning them on turns `read files` on, and turning
-/// `read files` off turns them off.
+/// is off. The one rule it keeps on its own: every change to files needs
+/// reading, so turning editing, creating, moving or deleting on turns `read
+/// files` on, and turning `read files` off turns them off.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Policy {
     map: BTreeMap<&'static str, Permission>,
@@ -631,6 +915,8 @@ impl Policy {
         // where a command may run is yes or no: there is nothing to ask
         let perm = match (entry.kind, perm) {
             (Kind::Subfolders, Permission::Ask) => Permission::Allow,
+            // what the catalogue does not list is always seen first
+            (Kind::Other, Permission::Allow) => Permission::Ask,
             (_, p) => p,
         };
         if perm == Permission::Off {
@@ -639,14 +925,15 @@ impl Policy {
             self.map.insert(entry.id, perm);
         }
         match entry.kind {
-            Kind::Edit | Kind::Create if perm != Permission::Off => {
+            Kind::Edit | Kind::Create | Kind::Move | Kind::Delete if perm != Permission::Off => {
                 if !self.allows(READ_FILES) {
                     self.map.insert(READ_FILES, Permission::Allow);
                 }
             }
             Kind::Read if perm == Permission::Off => {
-                self.map.remove(EDIT_FILES);
-                self.map.remove(CREATE_FILES);
+                for id in [EDIT_FILES, CREATE_FILES, MOVE_FILES, DELETE_FILES] {
+                    self.map.remove(id);
+                }
             }
             _ => {}
         }
@@ -669,14 +956,41 @@ impl Policy {
         self.allows(CREATE_FILES)
     }
 
+    pub fn moves(&self) -> bool {
+        self.allows(MOVE_FILES)
+    }
+
+    pub fn deletes(&self) -> bool {
+        self.allows(DELETE_FILES)
+    }
+
+    /// Something on disk may change: an edit, a new file, a move or a
+    /// delete.
+    pub fn changes_files(&self) -> bool {
+        self.edits() || self.creates() || self.moves() || self.deletes()
+    }
+
     pub fn subfolders(&self) -> bool {
         self.allows(SUBFOLDERS)
     }
 
-    /// A write lands without being shown first: editing or creating at
-    /// `allow`.
+    /// Programs outside the catalogue may be asked for.
+    pub fn others(&self) -> bool {
+        self.allows(OTHER_PROGRAMS)
+    }
+
+    /// `run_command` has something to run: a command that is on, or any
+    /// other program.
+    pub fn runs(&self) -> bool {
+        self.others() || !self.commands().is_empty()
+    }
+
+    /// A change lands without being shown first: editing, creating, moving
+    /// or deleting at `allow`.
     pub fn writes_unseen(&self) -> bool {
-        self.get(EDIT_FILES) == Permission::Allow || self.get(CREATE_FILES) == Permission::Allow
+        [EDIT_FILES, CREATE_FILES, MOVE_FILES, DELETE_FILES]
+            .iter()
+            .any(|id| self.get(id) == Permission::Allow)
     }
 
     /// The commands that are on, in catalogue order.
@@ -724,6 +1038,87 @@ pub fn match_call(policy: &Policy, tokens: &[String]) -> Option<(&'static Entry,
         .max_by_key(|(_, n)| *n)
 }
 
+/// Programs never run as an `other program`, even asking: a shell, and
+/// what runs another program in its place, which would take it past the
+/// checks of its arguments and the deny list of its family.
+pub const NEVER_RUN: &[&str] = &[
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "dash",
+    "ksh",
+    "csh",
+    "tcsh",
+    "nu",
+    "pwsh",
+    "powershell",
+    "cmd",
+    "sudo",
+    "doas",
+    "su",
+    "env",
+    "xargs",
+    "nohup",
+    "nice",
+    "time",
+    "timeout",
+    "watch",
+    "exec",
+    "command",
+    "eval",
+    "script",
+    "ssh",
+];
+
+/// The catalogue's say over a call made as an `other program`: the entry
+/// whose words open it, even if it is off, gives its deny list, its needs
+/// and its literal flags; failing that, the entry of the same program that
+/// refuses least gives its deny list, so `git push --exec-path` is refused
+/// as `git diff --exec-path` is. `None` for a program the catalogue does not
+/// know.
+pub fn rules_for(tokens: &[String]) -> Option<(&'static Entry, bool)> {
+    let program = tokens.first()?;
+    let whole = CATALOG
+        .iter()
+        .filter(|e| e.is_command())
+        .filter(|e| {
+            let n = e.words().count();
+            tokens.len() >= n && e.words().zip(tokens).all(|(w, t)| w == t)
+        })
+        .max_by_key(|e| e.words().count());
+    if let Some(e) = whole {
+        return Some((e, true));
+    }
+    CATALOG
+        .iter()
+        .filter(|e| e.is_command() && e.program() == program)
+        .min_by_key(|e| e.deny.len())
+        .map(|e| (e, false))
+}
+
+/// Why a program cannot be called as an `other program`: a path rather
+/// than a name, or one of `NEVER_RUN`.
+pub fn check_program(program: &str) -> Result<(), String> {
+    if program.starts_with('-') || program.contains(['/', '\\']) || program.contains(':') {
+        return Err(format!(
+            "`{program}`: name a program on PATH, not a path or a flag"
+        ));
+    }
+    let lower = program.to_ascii_lowercase();
+    let base = lower
+        .strip_suffix(".exe")
+        .or_else(|| lower.strip_suffix(".cmd"))
+        .or_else(|| lower.strip_suffix(".bat"))
+        .unwrap_or(&lower);
+    if NEVER_RUN.contains(&base) {
+        return Err(format!(
+            "`{program}` is never run: no shell, and nothing that runs another program"
+        ));
+    }
+    Ok(())
+}
+
 /// Why an argument is refused: a flag on the deny list, or a path that
 /// leaves the project. Anything that could be a path is checked as one,
 /// value of a `--flag=value` included, so `cat /etc/passwd` and
@@ -741,10 +1136,52 @@ pub fn check_arg(entry: &Entry, arg: &str) -> Result<(), String> {
     } else {
         arg
     };
+    if entry.category == Category::Network && value.contains("://") {
+        let lower = value.to_ascii_lowercase();
+        if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+            return Err(format!("`{value}`: only http:// and https:// URLs"));
+        }
+    }
     check_path_like(value)
 }
 
+/// Every argument of a call, as `check_arg` takes each one; the one after
+/// a flag of the entry's `literal` is not a path, so `-subj /CN=localhost`
+/// is let through.
+pub fn check_args(entry: &Entry, args: &[String]) -> Result<(), String> {
+    let mut literal = false;
+    for arg in args {
+        if literal {
+            if arg.chars().any(char::is_control) {
+                return Err("arguments cannot contain control characters".into());
+            }
+        } else {
+            check_arg(entry, arg)?;
+        }
+        literal = entry.literal.contains(&arg.as_str());
+    }
+    Ok(())
+}
+
+/// What is behind a `file:` prefix, if the value has one: `file:keys/pass`
+/// is `keys/pass`, and `file:///etc/passwd` is `///etc/passwd`, absolute as
+/// every `file://` URL is.
+pub fn behind_file_scheme(v: &str) -> Option<&str> {
+    let mut rest = v;
+    while rest
+        .get(..5)
+        .is_some_and(|s| s.eq_ignore_ascii_case("file:"))
+    {
+        rest = &rest[5..];
+    }
+    (rest.len() != v.len()).then_some(rest)
+}
+
 fn check_path_like(v: &str) -> Result<(), String> {
+    // `-passin file:/…`, `curl file:///…`: a path behind the scheme is one
+    if let Some(rest) = behind_file_scheme(v) {
+        return check_path_like(rest).map_err(|_| format!("`{v}` is outside the project"));
+    }
     let norm = v.replace('\\', "/");
     let mut chars = norm.chars();
     let first = chars.next();

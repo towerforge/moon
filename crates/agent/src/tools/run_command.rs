@@ -154,7 +154,7 @@ pub fn prepare(sandbox: &Sandbox, policy: &Policy, arguments: &Value) -> Result<
         // not in the catalogue, or off there: any other program, asking
         None if policy.others() => {
             let program = tokens[0].as_str();
-            catalog::check_program(program).map_err(&usage)?;
+            catalog::check_program(program).map_err(usage)?;
             let other = catalog::find(OTHER_PROGRAMS).expect("other programs is in the catalogue");
             let (rules, needs) = match catalog::rules_for(&tokens) {
                 Some((e, true)) => (e, Some(e.words().count())),
@@ -187,7 +187,7 @@ pub fn prepare(sandbox: &Sandbox, policy: &Policy, arguments: &Value) -> Result<
         }
     };
     let rest = &tokens[call.start..];
-    catalog::check_args(call.rules, rest).map_err(&usage)?;
+    catalog::check_args(call.rules, rest).map_err(usage)?;
     for arg in rest {
         // the paths the file tools refuse are refused here too, by name,
         // `file:.env` as well
